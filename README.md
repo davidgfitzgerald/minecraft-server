@@ -107,19 +107,46 @@ The agent **must be running/online** for this (an offline agent shows a `?` and 
 
 ## 5. Connect
 
-### PC / phone / tablet
-Minecraft → **Servers** tab → **Add Server** → enter the IP and port → Join. Done.
+> The address/port below are **made-up examples** — get your real playit tunnel host + port
+> with `just tunnel`. The DNS IPs are public BedrockConnect / Google DNS.
 
-### Console (PS5 / Xbox / Switch)
-Consoles have no "Add Server" button, so they need **BedrockConnect** (a DNS redirect into the
-featured-server list):
+### Connect on PC (Minecraft for Windows — Bedrock)
 
-1. Console network settings → set DNS to **Manual**:
-   - **Primary DNS:** `45.55.68.52`  (PS5; Xbox/Switch can use `104.238.130.180`)
+1. Open Minecraft for Windows (the Bedrock version) and click **Play**.
+2. Select the **Servers** tab at the top.
+3. Scroll to the bottom of the server list and click **Add Server**.
+4. Fill in:
+   - **Server Name:** anything (e.g. "My World")
+   - **Server Address:** `203.0.113.42`
+   - **Port:** `52345`
+5. Click **Save** (or **Play** to jump straight in).
+6. The server now appears in your Servers list — click it, then **Join Server**.
+
+### Connect on PS5 (via BedrockConnect)
+
+Consoles have no "Add Server" button, so they use **BedrockConnect** (a DNS redirect into the
+featured-server list).
+
+1. Boot the PS5, log in to your profile, and **close Minecraft** if it's open.
+2. **Settings** (cog) → **Network** → **Settings** → **Set Up Internet Connection**.
+3. On your Wi-Fi network choose **Options** → **Advanced Settings**.
+4. Set **DNS Settings** to **Manual**:
+   - **Primary DNS:** `45.55.68.52`
    - **Secondary DNS:** `8.8.8.8`
-2. Minecraft → **Servers** tab → click **any featured server** (not The Hive — its DNSSEC blocks the redirect)
-3. In the BedrockConnect menu → **Connect to a Server** → enter the tunnel **IP** and **port**
-4. Set DNS back to **Automatic** when you're done (otherwise featured servers stay redirected).
+   - **Proxy Server:** Don't Use
+5. Launch **Minecraft** and sign in to your Microsoft account.
+6. Click **Play** → **Servers** tab → choose **The Hive** and click **Play**
+   *(if BedrockConnect doesn't appear, try another featured server).*
+7. When **BedrockConnect** loads → **Connect to a Server**.
+8. Fill in:
+   - **Server Address:** `203.0.113.42`
+   - **Server Port:** `52345`
+   - **Server Name:** anything (e.g. "My World")
+   - Check **Add to server list** ✅
+9. Scroll down and **connect**!
+
+> When you're done, set the PS5 DNS back to **Automatic** (otherwise featured servers stay
+> redirected). Xbox/Switch use the same flow with BedrockConnect DNS `104.238.130.180`.
 
 ---
 
