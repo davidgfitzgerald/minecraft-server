@@ -1,0 +1,112 @@
+# Cap each container's live JSON log so it can't grow unbounded on disk.
+# Retained = max-size * max-file; older chunks roll off. `just down`/`just recreate`
+# archive the current log to bedrock-data/logs/ first, so rotation never loses history.
+# NOTE: takes effect on container recreate — apply with `just recreate`.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  bedrock:
+    image: itzg/minecraft-bedrock-server
+    container_name: bedrock
+    logging: *default-logging
+    environment:
+      EULA: "TRUE"
+      SERVER_NAME: ${SERVER_NAME:-bedrock}
+      LEVEL_NAME: ${LEVEL_NAME:-world}
+      GAMEMODE: "survival"
+      DIFFICULTY: "normal"
+      PLAYER_IDLE_TIMEOUT: "240"  # minutes (4h) before an idle player is kicked; was 30
+      VERSION: "LATEST"          # tracks the current Bedrock version so it matches auto-updated clients
+      VIEW_DISTANCE: "12"        # was 32 — huge per-join chunk spike was tipping box64 over the edge
+      # --- box64 emulation (x86 Bedrock server on Apple Silicon) ---
+      # JIT ON for correct, full-speed gameplay (redstone/drops work). STRONGMEM
+      # reduces — but does not eliminate — the intermittent heap-corruption crash.
+      # Interpreter mode (BOX64_DYNAREC=0) avoided crashes but ran too slow and
+      # broke game logic, so it's removed. The real cure is native x86 hosting.
+      # BOX64_DYNAREC_STRONGMEM: "1"
+      # ALLOW_LIST: "true"                       # uncomment to enforce the allow-list
+      # ALLOW_LIST_USERS: ${ALLOW_LIST_USERS:-}  # comma-separated gamertags; set in .env
+    ports:
+      - "19132:19132/udp"        # keeps direct LAN play / PS5 "LAN Games" discovery working
+    volumes:
+      - ./bedrock-data:/data     # your world persists here, next to this file
+    networks:
+      mc:
+        ipv4_address: 172.20.0.10
+    stdin_open: true             # itzg image expects -i
+    tty: true                    # ...and -t, so you can attach to the server console
+    restart: unless-stopped
+
+  playit:
+    image: ghcr.io/playit-cloud/playit-agent:0.17
+    container_name: playit
+    logging: *default-logging
+    environment:
+      - SECRET_KEY=${PLAYIT_SECRET_KEY}
+    networks:
+      - mc
+    depends_on:
+      - bedrock
+    restart: unless-stopped
+
+  # Optional always-on session monitor. Slim (docker CLI image); reads the other
+  # containers' logs/stats via the docker socket and writes CSVs to
+  # bedrock-data/monitoring/. Opt-in: it only starts with the "monitor" profile,
+  # e.g. `docker compose --profile monitor up -d`  (or `just monitor-up`).
+  monitor:
+    image: docker:cli
+    container_name: mc-monitor
+    logging: *default-logging
+    profiles: ["monitor"]
+    depends_on:
+      - bedrock
+    environment:
+      MONITOR_OUT: /data/monitoring
+      MONITOR_INTERVAL: "30"
+      # alerting → publishes to the ntfy bus (crash, tunnel-down, CPU/mem, digest)
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.sh}
+      NOTIFY_TITLE: "Minecraft (bedrock)"
+      # alert thresholds — override any of these in .env (defaults shown):
+      MONITOR_MEM_ALERT: ${MONITOR_MEM_ALERT:-2500}        # bedrock memory, MiB
+      MONITOR_CPU_ALERT: ${MONITOR_CPU_ALERT:-300}         # bedrock CPU, %
+      MONITOR_ALERT_COOLDOWN: ${MONITOR_ALERT_COOLDOWN:-600} # min seconds between repeats
+      HEALTHCHECK_URL: ${HEALTHCHECK_URL:-}                  # dead-man's-switch ping (healthchecks.io)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # read-only: only logs/stats
+      - ./bedrock-data:/data
+      - ./scripts:/scripts:ro
+    command: ["sh", "/scripts/monitor.sh"]
+    restart: unless-stopped
+
+  # Bus subscriber → fan-out. Streams every ntfy event and forwards it to Discord
+  # (if DISCORD_WEBHOOK_URL is set) + prints to its log. No docker socket needed.
+  # Same "monitor" profile, so `just monitor-up` brings the whole observability stack.
+  bridge:
+    image: curlimages/curl:latest
+    container_name: mc-bridge
+    logging: *default-logging
+    profiles: ["monitor"]
+    environment:
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.sh}
+      # per-channel Discord webhooks (set in .env). Any unset category falls back to DISCORD_WEBHOOK_URL.
+      DISCORD_WEBHOOK_PLAYER: ${DISCORD_WEBHOOK_PLAYER:-}    # #player-activity (joins/leaves)
+      DISCORD_WEBHOOK_ALERT: ${DISCORD_WEBHOOK_ALERT:-}      # #alerts (crash/tunnel/resource)
+      DISCORD_WEBHOOK_MONITOR: ${DISCORD_WEBHOOK_MONITOR:-}  # #monitoring (daily digest)
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}          # fallback / catch-all
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["sh", "/scripts/bridge.sh"]
+    restart: unless-stopped
+
+networks:
+  mc:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

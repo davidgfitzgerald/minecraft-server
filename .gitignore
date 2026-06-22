@@ -1,0 +1,17 @@
+# ── Secrets — NEVER commit ──
+.env
+.env.*
+
+# ── Local Claude Code overrides (permissions, etc.) ──
+.claude/settings.local.json
+
+# ── Runtime data: world saves, backups, logs, monitoring CSVs, scratch DBs ──
+bedrock-data/
+
+# ── Imported world archives ──
+wetransfer_*/
+
+# ── Temp / backup / OS cruft ──
+*.tmp
+.env.bak-*
+.DS_Store
