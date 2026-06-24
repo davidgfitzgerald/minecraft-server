@@ -264,15 +264,33 @@ just monitor-down    # stop them
 just digest-now      # publish a digest on demand (peak players, joins/leaves, crashes) → #monitoring
 ```
 
+**Uptime graph (4-panel PNG → #monitoring).** A richer, visual daily digest in **UK time**
+(`scripts/uptime_graph.py` + `scripts/uptime.sh`, host-only — needs `python3` + `matplotlib`).
+Panels: an up/down **status strip**, **players online**, **CPU %**, **memory**. Crucially the
+status strip is driven by the **healthchecks.io flip history** (the same source as
+`#server-status`), so it reflects *player-reachability* (host online + tunnel up), not merely
+"is the container running" — and data gaps are left blank (no fake interpolation) while
+unreachable periods are shaded red. Needs `HEALTHCHECK_URL`, `HEALTHCHECK_API_KEY`, and
+`DISCORD_WEBHOOK_MONITOR` in `.env`.
+
+```bash
+just uptime                  # post the last 24h now → #monitoring
+just uptime yesterday        # a specific window: yesterday | today | 12h | 2026-06-23
+just uptime-preview          # render locally + print summary, WITHOUT posting
+just uptime-install          # schedule the daily post (previous UK day) at 00:05 → #monitoring
+just uptime-running          # is the daily post scheduled?  (uptime-uninstall to remove)
+```
+
+
 **Discord (optional, manual) — routed to per-category channels:** every event carries a
 category tag (`player` / `alert` / `monitor`) and the bridge posts it to the matching
-channel's webhook. In Discord, create channels (e.g. `#player-activity`, `#alerts`,
+channel's webhook. In Discord, create channels (e.g. `#player-activity`, `#server-status`,
 `#monitoring`); for each, *Edit Channel → Integrations → Webhooks → New Webhook → Copy URL*.
 Put them in `.env`:
 
 ```dotenv
 DISCORD_WEBHOOK_PLAYER=https://discord.com/api/webhooks/XXXX/YYYY    # joins/leaves
-DISCORD_WEBHOOK_ALERT=https://discord.com/api/webhooks/XXXX/YYYY     # crash/tunnel/resource
+DISCORD_WEBHOOK_SERVER_STATUS=https://discord.com/api/webhooks/XXXX/YYYY     # crash/tunnel/resource
 DISCORD_WEBHOOK_MONITOR=https://discord.com/api/webhooks/XXXX/YYYY   # daily digest
 # DISCORD_WEBHOOK_URL=...   # optional single catch-all; used for any category left unset
 ```
@@ -283,7 +301,7 @@ Reload the bridge to pick them up (monitor-only, never touches bedrock):
 | Category | Events | Channel |
 |---|---|---|
 | `player`  | joins / leaves (+ online count) | `#player-activity` |
-| `alert`   | crash, server-up, tunnel down/up, high CPU/mem + cleared | `#alerts` |
+| `alert`   | crash, server-up, tunnel down/up, high CPU/mem + cleared | `#server-status` |
 | `monitor` | daily digest | `#monitoring` |
 
 ## Safety guards (don't disconnect players)

@@ -11,8 +11,14 @@ NOTIFY_TITLE="${NOTIFY_TITLE:-Minecraft (bedrock)}"
 HE="bedrock-data/monitoring/health.csv"
 EV="bedrock-data/monitoring/events.csv"
 DAY="$(date -u +%Y-%m-%d)"
-joins=$(grep -c ',connected,' "$EV" 2>/dev/null)
-leaves=$(grep -c ',disconnected,' "$EV" 2>/dev/null)
+# Include rotated logs (health.csv.1, health.csv.2, …) written by the monitor's
+# docker-style rotation. List health files oldest→newest so the sparkline and the
+# "now" reading stay chronological; counts below don't care about order.
+he_files=""; i=99; while [ "$i" -ge 1 ]; do [ -f "$HE.$i" ] && he_files="$he_files $HE.$i"; i=$((i-1)); done
+[ -f "$HE" ] && he_files="$he_files $HE"
+[ -n "$he_files" ] || he_files=/dev/null
+joins=$(cat "$EV" "$EV".* 2>/dev/null | grep -c ',connected,')
+leaves=$(cat "$EV" "$EV".* 2>/dev/null | grep -c ',disconnected,')
 crashes=$(docker logs bedrock 2>&1 | grep -c 'free(): invalid next size')
 
 MSG=$(awk -F, -v day="$DAY" -v joins="${joins:-0}" -v leaves="${leaves:-0}" -v crashes="${crashes:-0}" '
@@ -26,7 +32,7 @@ function spark(arr,n,  i,mn,mx,s,lvl,K,idx){
     if(lvl<0)lvl=0; if(lvl>7)lvl=7; s=s blk[lvl] }
   return s }
 BEGIN{ blk[0]="▁";blk[1]="▂";blk[2]="▃";blk[3]="▄";blk[4]="▅";blk[5]="▆";blk[6]="▇";blk[7]="█" }
-NR==1 { next }
+FNR==1 { next }
 index($1,day)==1 {
   n++; cpu[n]=$3+0; mem[n]=tomib($4); p=$2+0;
   csum+=cpu[n]; if(cpu[n]>cmax)cmax=cpu[n];
@@ -38,6 +44,6 @@ END{
   printf "👥 players: now %d · peak %d · %d joins / %d leaves\n", lp, pmax, joins, leaves;
   printf "🔥 CPU: now %d%% · avg %d%% · max %d%%\n   %s\n", lc, csum/n, cmax, spark(cpu,n);
   printf "🧠 RAM: now %.1fG · avg %.1fG · max %.1fG\n   %s\n", lm/1024, (msum/n)/1024, mmax/1024, spark(mem,n);
-  printf "💥 crashes since boot: %d", crashes }' "$HE")
+  printf "💥 crashes since boot: %d", crashes }' $he_files)
 
 publish_bus "$MSG" default "monitor,bar_chart"

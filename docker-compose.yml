@@ -53,15 +53,14 @@ services:
       - bedrock
     restart: unless-stopped
 
-  # Optional always-on session monitor. Slim (docker CLI image); reads the other
-  # containers' logs/stats via the docker socket and writes CSVs to
-  # bedrock-data/monitoring/. Opt-in: it only starts with the "monitor" profile,
-  # e.g. `docker compose --profile monitor up -d`  (or `just monitor-up`).
+  # Always-on session monitor. Slim (docker CLI image); reads the other containers'
+  # logs/stats via the docker socket and writes CSVs to bedrock-data/monitoring/.
+  # Part of the default set — `just up` / `docker compose up -d` brings it up with the
+  # server. Control it alone with `just monitor-up` / `just monitor-down`.
   monitor:
     image: docker:cli
     container_name: mc-monitor
     logging: *default-logging
-    profiles: ["monitor"]
     depends_on:
       - bedrock
     environment:
@@ -85,18 +84,17 @@ services:
 
   # Bus subscriber → fan-out. Streams every ntfy event and forwards it to Discord
   # (if DISCORD_WEBHOOK_URL is set) + prints to its log. No docker socket needed.
-  # Same "monitor" profile, so `just monitor-up` brings the whole observability stack.
+  # Default set too, so `just up` brings the whole observability stack with the server.
   bridge:
     image: curlimages/curl:latest
     container_name: mc-bridge
     logging: *default-logging
-    profiles: ["monitor"]
     environment:
       NTFY_TOPIC: ${NTFY_TOPIC:-}
       NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.sh}
       # per-channel Discord webhooks (set in .env). Any unset category falls back to DISCORD_WEBHOOK_URL.
       DISCORD_WEBHOOK_PLAYER: ${DISCORD_WEBHOOK_PLAYER:-}    # #player-activity (joins/leaves)
-      DISCORD_WEBHOOK_ALERT: ${DISCORD_WEBHOOK_ALERT:-}      # #alerts (crash/tunnel/resource)
+      DISCORD_WEBHOOK_SERVER_STATUS: ${DISCORD_WEBHOOK_SERVER_STATUS:-}      # #server-status (crash/tunnel/resource)
       DISCORD_WEBHOOK_MONITOR: ${DISCORD_WEBHOOK_MONITOR:-}  # #monitoring (daily digest)
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}          # fallback / catch-all
     volumes:

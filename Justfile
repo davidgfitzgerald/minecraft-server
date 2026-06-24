@@ -7,6 +7,11 @@ set dotenv-load          # load .env so LEVEL_NAME (and other config) reach the 
 # the active world folder name (under bedrock-data/worlds/) — set LEVEL_NAME in .env
 world := env_var_or_default("LEVEL_NAME", "world")
 
+# flag file marking an INTENTIONAL (manual) stop. `maintenance-down` writes it; the
+# next start (up/restart/recreate/maintenance-up) sees it, announces the return to
+# Discord (prompting for a message), and clears it. (bedrock-data/ is gitignored.)
+maint_flag := "bedrock-data/.maintenance"
+
 # show all recipes
 default:
     @just --list
@@ -18,6 +23,7 @@ up:
     @./scripts/guard.sh "start/refresh the stack (just up — may recreate changed containers)" players-only
     @echo "starting stack ..."
     docker compose up -d
+    @just _on-start    # if returning from a manual stop, announce the return to Discord
 
 # stop & remove the stack (guarded; archives logs first — `down` destroys the container's logs)
 down:
@@ -26,11 +32,13 @@ down:
     @just _archive-logs
     docker compose down
 
-# restart just the bedrock server (guarded; reuses container, so logs are kept)
-restart:
+# restart just the bedrock server (guarded; reuses container, so logs are kept).
+# Always prompts for a #server-status message (Enter = default); pass one inline to skip: just restart "Quick bounce"
+restart MSG="":
     @./scripts/guard.sh "restart the bedrock server (just restart)"
     @echo "restarting bedrock server ..."
     docker compose restart bedrock
+    @just _on-start "{{MSG}}" force    # always announce the return to Discord (prompts for a message)
 
 # recreate containers (guarded; needed after editing docker-compose.yml; archives logs first)
 recreate:
@@ -38,6 +46,7 @@ recreate:
     @echo "recreating containers ..."
     @just _archive-logs
     docker compose up -d --force-recreate
+    @just _on-start    # if returning from a manual stop, announce the return to Discord
 
 # internal: snapshot the CURRENT container logs to bedrock-data/logs/ before they're lost
 _archive-logs:
@@ -166,7 +175,19 @@ backup:
     done
     cp -a "$WORLD" "$BK"
     docker exec bedrock send-command "save resume" >/dev/null 2>&1
-    echo "✅ backup: $BK  ($(du -sh "$BK" | cut -f1), $(ls "$BK/db" | wc -l | tr -d ' ') db files)"
+    SIZE=$(du -sh "$BK" | cut -f1)
+    DBCOUNT=$(ls "$BK/db" | wc -l | tr -d ' ')
+    echo "✅ backup: $BK  ($SIZE, $DBCOUNT db files)"
+    # → announce to #backups (Discord). Non-fatal: a webhook hiccup must never fail the backup.
+    if [ -n "${DISCORD_WEBHOOK_BACKUP:-}" ]; then
+      MSG="🗄️ A fresh world-snapshot has been pressed into stone — \`$(basename "$BK")\` · ${SIZE} · ${DBCOUNT} db files. Should the goblins meet ruin, this is the realm they wake to. 🐐"
+      safe=$(printf '%s' "$MSG" | sed 's/"/\\"/g')
+      curl -fsS -H "Content-Type: application/json" \
+        -d "{\"content\":\"${safe}\"}" "$DISCORD_WEBHOOK_BACKUP" >/dev/null 2>&1 \
+        && echo "→ posted to #backups" || echo "   (Discord post failed — backup still OK)"
+    else
+      echo "   (DISCORD_WEBHOOK_BACKUP unset — skipped #backups post)"
+    fi
 
 # list backups (newest first)
 backups:
@@ -187,6 +208,58 @@ restore NAME:
     docker compose start bedrock
     echo "✅ restored {{NAME}} (previous world kept alongside as *.pre-restore-*)"
 
+# interactively prune OLD backups (manual only). Lists all backups oldest→newest, lets you
+# delete up to 3 of the OLDEST per run, and NEVER the 3 newest. Posts a summary to #backups.
+backup-clean:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    DIR="bedrock-data/backups"
+    [ -d "$DIR" ] || { echo "no backups dir yet ($DIR) — run: just backup"; exit 0; }
+    # backups are named {{world}}_YYYYMMDD-HHMMSS, so a lexical sort = chronological (oldest→newest)
+    N=$(ls -1 "$DIR" 2>/dev/null | wc -l | tr -d ' '); N=${N:-0}
+    if [ "$N" -eq 0 ]; then echo "no backups found in $DIR"; exit 0; fi
+    # eligible this run = everything except the newest 3, capped at 3
+    MAX=$((N - 3)); [ "$MAX" -lt 0 ] && MAX=0; [ "$MAX" -gt 3 ] && MAX=3
+    echo "📦 $N backup(s) in $DIR (oldest → newest):"
+    i=0
+    while IFS= read -r name; do
+      i=$((i + 1))
+      size=$(du -sh "$DIR/$name" 2>/dev/null | cut -f1)
+      if   [ "$i" -gt $((N - 3)) ]; then tag="🔒 newest 3 — always kept"
+      elif [ "$i" -le "$MAX" ];     then tag="🗑️  oldest — eligible now"
+      else                                tag="·  kept (eligible a later run)"; fi
+      printf "  %2d. %-40s %7s  %s\n" "$i" "$name" "${size:-?}" "$tag"
+    done < <(ls -1 "$DIR" | sort)
+    echo
+    if [ "$MAX" -eq 0 ]; then echo "Nothing to delete — the 3 newest backups are always protected (you have $N)."; exit 0; fi
+    if [ ! -t 0 ]; then echo "refusing to delete without an interactive terminal."; exit 1; fi
+    printf "How many of the OLDEST backups to delete? (0–%s, Enter = 0): " "$MAX"
+    read -r CNT; CNT=${CNT:-0}
+    case "$CNT" in (*[!0-9]*) echo "not a number — nothing deleted."; exit 1;; esac
+    if [ "$CNT" -gt "$MAX" ]; then echo "max is $MAX per run — nothing deleted."; exit 1; fi
+    if [ "$CNT" -eq 0 ]; then echo "0 selected — nothing deleted."; exit 0; fi
+    echo "About to delete these $CNT oldest backup(s):"
+    ls -1 "$DIR" | sort | head -n "$CNT" | sed 's/^/  - /'
+    printf "Type 'delete' to confirm (anything else aborts): "
+    read -r CONF
+    [ "$CONF" = "delete" ] || { echo "aborted — nothing deleted."; exit 1; }
+    DELETED=0
+    while IFS= read -r name; do
+      if /bin/rm -rf "$DIR/$name"; then echo "🗑️  deleted $name"; DELETED=$((DELETED + 1)); fi
+    done < <(ls -1 "$DIR" | sort | head -n "$CNT")
+    REMAIN=$(ls -1 "$DIR" 2>/dev/null | wc -l | tr -d ' '); REMAIN=${REMAIN:-0}
+    echo "✅ deleted $DELETED backup(s); $REMAIN remain."
+    # → announce to #backups (Discord). Non-fatal: a webhook hiccup must never fail the cleanup.
+    if [ -n "${DISCORD_WEBHOOK_BACKUP:-}" ]; then
+      MSG="🧹 Backup cleanup: swept away ${DELETED} of the realm's oldest snapshot(s) — ${REMAIN} still stand watch in the vault. 🐐"
+      safe=$(printf '%s' "$MSG" | sed 's/"/\\"/g')
+      curl -fsS -H "Content-Type: application/json" \
+        -d "{\"content\":\"${safe}\"}" "$DISCORD_WEBHOOK_BACKUP" >/dev/null 2>&1 \
+        && echo "→ posted to #backups" || echo "   (Discord post failed — cleanup still done)"
+    else
+      echo "   (DISCORD_WEBHOOK_BACKUP unset — skipped #backups post)"
+    fi
+
 # ───────────────────────── monitoring / analytics ───────────────────
 
 # run the live monitor on the host (Ctrl-C to stop) — writes bedrock-data/monitoring/*.csv
@@ -194,25 +267,51 @@ monitor INTERVAL="30":
     @echo "running monitor interval={{INTERVAL}}s ..."
     ./scripts/monitor.sh {{INTERVAL}}
 
-# start the observability stack (monitor + bus→Discord bridge). --no-deps so it NEVER touches bedrock
+# start ONLY the observability stack (monitor + bus→Discord bridge), e.g. after a
+# monitor-down. `just up` already brings these up too; --no-deps so it NEVER touches bedrock.
 monitor-up:
     @echo "starting monitor + bridge containers ..."
-    docker compose --profile monitor up -d --no-deps monitor bridge
+    docker compose up -d --no-deps monitor bridge
 
-# stop the observability stack
+# stop ONLY the observability stack (leaves the game server running)
 monitor-down:
     @echo "stopping monitor + bridge containers ..."
-    docker compose --profile monitor stop monitor bridge
+    docker compose stop monitor bridge
 
 # follow the bus→Discord bridge log (shows every event flowing through ntfy)
 bridge-logs:
     @echo "checking bridge logs ..."
-    docker compose --profile monitor logs -f bridge
+    docker compose logs -f bridge
 
 # publish a digest now (peak players, joins/leaves, crashes) → #monitoring + phone
 digest-now:
     @echo "publishing digest ..."
     @./scripts/digest.sh
+
+# post the uptime graph now → #monitoring (4 panels: status/players/CPU/RAM, London time).
+# WINDOW: empty=last 24h · yesterday · today · Nh (e.g. 12h) · YYYY-MM-DD. Status is from
+# healthchecks.io (matches #server-status); detail panels from the local health.csv.
+uptime WINDOW="":
+    @./scripts/uptime.sh {{WINDOW}}
+
+# render the uptime graph locally WITHOUT posting to Discord (prints path + summary)
+uptime-preview WINDOW="":
+    @./scripts/uptime.sh --no-post {{WINDOW}}
+
+# schedule the daily uptime post (previous London day) at 00:05 → #monitoring (launchd)
+uptime-install:
+    @echo "installing uptime agent ..."
+    @./scripts/uptime-agent.sh install
+
+# stop & remove the daily uptime post
+uptime-uninstall:
+    @echo "removing uptime agent ..."
+    @./scripts/uptime-agent.sh uninstall
+
+# is the daily uptime post scheduled?
+uptime-running:
+    @echo "checking uptime agent ..."
+    @./scripts/uptime-agent.sh status
 
 # forensic summary of the CURRENT session logs (relogs, timeline, tunnel events)
 analyze:
@@ -228,6 +327,71 @@ analyze:
     echo; echo "== playit anomalies (session-expired / ERROR) =="
     docker logs playit 2>&1 | grep -iE "session expired|ERROR" | sed -E 's/\.[0-9]+Z//' | tail -10
     echo; echo "== free() crashes: $(docker logs bedrock 2>&1 | grep -c 'free(): invalid next size') =="
+
+# ───────────────────────── maintenance (planned downtime) ───────────
+# Take the stack down for planned maintenance WITHOUT tripping alerts:
+# announce to #server-status, pause healthchecks.io, silence the monitor, then stop.
+# Optional custom message:  just maintenance-down "Laptop off for a few hours"
+
+# announce + stop the stack (guarded). hc.io is NOT paused — the downtime is left to
+# show truthfully on the check (and in #server-status via its integration).
+maintenance-down MSG="":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ./scripts/guard.sh "maintenance shutdown (just maintenance-down)" || exit 1
+    MSG="{{MSG}}"
+    [ -z "$MSG" ] && MSG="🛠️ Server going down for planned maintenance — back soon. 🐐"
+    echo "→ announcing maintenance to #server-status ..."
+    ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,wrench,construction" ) || true
+    # stop monitor+bridge FIRST so they don't double-publish their own DOWN alert
+    # (hc.io still goes down on its own once pings stop — that's the truthful signal we want)
+    echo "→ stopping monitor + bridge ..."
+    docker compose stop monitor bridge 2>/dev/null || true
+    # then stop the server + tunnel (kept, not removed — logs & state survive for a quick resume)
+    echo "→ stopping bedrock + playit ..."
+    docker compose stop bedrock playit
+    # mark this as an intentional stop so the NEXT start (any of up/restart/recreate/
+    # maintenance-up) knows to announce the return to Discord and prompt for a message.
+    mkdir -p "$(dirname "{{maint_flag}}")"
+    printf 'down_at=%s\nmsg=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MSG" > "{{maint_flag}}"
+    echo "✅ maintenance-down complete — stack stopped. hc.io will show DOWN shortly. Resume with ANY of: just up / restart / recreate / maintenance-up"
+
+# bring everything back: start stack → wait ready → restart monitoring → resume + announce
+# (announce/prompt is shared with up/restart/recreate via _on-start; `force` = always announce)
+maintenance-up MSG="":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "→ starting stack (bedrock + playit + monitor + bridge) ..."
+    docker compose up -d
+    printf "→ waiting for the server to accept commands "
+    ready=0
+    for i in $(seq 1 30); do
+      if docker exec bedrock send-command "list" >/dev/null 2>&1; then ready=1; echo " ready"; break; fi
+      printf "."; sleep 2
+    done
+    [ "$ready" -eq 1 ] || echo " (timed out after ~60s — continuing anyway; check: just status)"
+    just _on-start "{{MSG}}" force
+    echo "✅ maintenance-up complete — stack up, monitoring live."
+
+# internal: shared "server is starting" hook. If we're returning from an intentional stop
+# (maintenance-down left the flag) OR force is set, announce the return to Discord — using
+# MSG, else prompting interactively (Enter = default), else the default — then clear the
+# flag. Called by up/restart/recreate/maintenance-up. (hc.io is never paused, so no resume.)
+_on-start MSG="" FORCE="":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # nothing to announce unless we're coming back from a manual stop (flag) or forced
+    if [ ! -f "{{maint_flag}}" ] && [ -z "{{FORCE}}" ]; then exit 0; fi
+    MSG="{{MSG}}"
+    if [ -z "$MSG" ] && [ -t 0 ]; then
+      printf "💬 Discord message for #server-status to announce the server is back (Enter for default): "
+      read -r MSG
+    fi
+    [ -z "$MSG" ] && MSG="✅ Server is back up. Reconnect and have fun! 🐐"
+    echo "→ announcing return-to-service to #server-status ..."
+    ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,white_check_mark" ) || true
+    rm -f "{{maint_flag}}"
+    echo "→ cleared the maintenance flag."
 
 # ───────────────────────── world / player data (read-only) ───────────
 

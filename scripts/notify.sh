@@ -38,20 +38,29 @@ notify() {  # notify <message> <macSound> <ntfyTags>
   echo "→ notified: $msg"
 }
 
-online_count() {  # echo "X/Y" (current players online) by running `list`, or "" on failure
-  local since out
+online_count() {  # online_count [name] [want_present:1|0] -> echo "X/Y", or "" on failure
+  # Poll `list` until the count actually reflects the event we're reporting: a just-
+  # connected player isn't in `list` for ~0.5-0.7s after "Player connected", so a fixed
+  # sleep races and under/over-counts by one. We re-issue `list` and wait until <name>
+  # is present (join) / absent (leave) before trusting the count. With no name (test
+  # mode) we just return the first count we see.
+  local who="${1:-}" want="${2:-}" since block cnt names here tries
   since=$(date -u +%Y-%m-%dT%H:%M:%S)
-  sleep 0.3                                   # let the join/leave settle into the count
-  docker exec "$CONTAINER" send-command "list" >/dev/null 2>&1 || { echo ""; return; }
-  for _ in $(seq 1 10); do
-    out=$(docker logs --since "$since" "$CONTAINER" 2>&1 | grep -iE "players online" | tail -1)
-    if [ -n "$out" ]; then
-      printf '%s' "$out" | sed -E 's#.*There are ([0-9]+/[0-9]+) players online.*#\1#'
-      return
-    fi
-    sleep 0.05
+  for tries in 1 2 3 4; do
+    docker exec "$CONTAINER" send-command "list" >/dev/null 2>&1 || { echo ""; return; }
+    for _ in $(seq 1 8); do                     # poll this list's output for ~0.8s
+      sleep 0.1
+      # latest "players online:" block = its count line + the names line beneath it
+      block=$(docker logs --since "$since" "$CONTAINER" 2>&1 | grep -iA1 "players online" | tail -2)
+      cnt=$(printf '%s' "$block" | sed -nE 's#.*There are ([0-9]+/[0-9]+) players online.*#\1#p')
+      [ -z "$cnt" ] && continue
+      [ -z "$who" ] && { printf '%s' "$cnt"; return; }     # test mode: first count wins
+      names=$(printf '%s' "$block" | sed -n '2p')
+      if printf '%s' "$names" | grep -qiwF -- "$who"; then here=1; else here=0; fi
+      [ "$here" = "$want" ] && { printf '%s' "$cnt"; return; }   # list now reflects event
+    done
   done
-  echo ""
+  printf '%s' "${cnt:-}"                          # timed out -> best effort (may be stale)
 }
 
 echo "🔔 watching '$CONTAINER' for player connect/disconnect (Ctrl-C to stop)…"
@@ -61,13 +70,18 @@ if [ -n "${NTFY_TOPIC:-}" ]; then echo "   iPhone push: ON  (ntfy topic '$NTFY_T
 # --tail 0 => only NEW log lines (no replay of history), then follow.
 docker logs -f --tail 0 "$CONTAINER" 2>&1 | while IFS= read -r line; do
   case "$line" in
+    *"Starting Server"*)
+      # A stop/restart kills sessions WITHOUT logging "Player disconnected", so the
+      # post-restart re-joins would otherwise look like impossible double-joins with no
+      # "left" between them. Announce the restart so the timeline reads correctly.
+      notify "🔄 server (re)started — players will reconnect" "Funk" "arrows_counterclockwise,gear" ;;
     *"Player connected:"*)
       name=$(printf '%s' "$line" | sed -E 's/.*Player connected: ([^,]+),.*/\1/')
-      cnt=$(online_count); msg="✅ ${name} joined"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"
+      cnt=$(online_count "$name" 1); msg="✅ ${name} joined"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"
       notify "$msg" "Glass" "player,white_check_mark,video_game" ;;
     *"Player disconnected:"*)
       name=$(printf '%s' "$line" | sed -E 's/.*Player disconnected: ([^,]+),.*/\1/')
-      cnt=$(online_count); msg="👋 ${name} left"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"
+      cnt=$(online_count "$name" 0); msg="👋 ${name} left"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"
       notify "$msg" "Submarine" "player,wave,video_game" ;;
     *"players online:"*)
       if [ "${NOTIFY_TEST:-0}" = "1" ]; then

@@ -6,7 +6,7 @@
 # Category is the FIRST ntfy tag on each event: player | alert | monitor.
 # Each category maps to its own channel webhook, falling back to DISCORD_WEBHOOK_URL:
 #   player  → DISCORD_WEBHOOK_PLAYER    (#player-activity)
-#   alert   → DISCORD_WEBHOOK_ALERT     (#alerts)
+#   alert   → DISCORD_WEBHOOK_SERVER_STATUS     (#server-status)
 #   monitor → DISCORD_WEBHOOK_MONITOR   (#monitoring)
 #   (anything else, or a category with no specific hook) → DISCORD_WEBHOOK_URL
 #
@@ -15,7 +15,7 @@ set -u
 TOPIC="${NTFY_TOPIC:?bridge: NTFY_TOPIC not set}"
 SERVER="${NTFY_SERVER:-https://ntfy.sh}"
 W_PLAYER="${DISCORD_WEBHOOK_PLAYER:-}"
-W_ALERT="${DISCORD_WEBHOOK_ALERT:-}"
+W_ALERT="${DISCORD_WEBHOOK_SERVER_STATUS:-}"
 W_MONITOR="${DISCORD_WEBHOOK_MONITOR:-}"
 W_DEFAULT="${DISCORD_WEBHOOK_URL:-}"
 

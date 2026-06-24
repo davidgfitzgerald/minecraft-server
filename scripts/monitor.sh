@@ -13,12 +13,29 @@ INT="${1:-${MONITOR_INTERVAL:-30}}"
 BED="${BEDROCK_CONTAINER:-bedrock}"
 PLY="${PLAYIT_CONTAINER:-playit}"
 mkdir -p "$OUT"
-EV="$OUT/events.csv"
-HE="$OUT/health.csv"
-[ -f "$EV" ] || echo "time,event,player" > "$EV"
-[ -f "$HE" ] || echo "time,players_online,bedrock_cpu_pct,bedrock_mem,playit_session_expired_d,playit_error_d,playit_udp_reauth_d" > "$HE"
+EV="$OUT/events.csv"; EV_HDR="time,event,player"
+HE="$OUT/health.csv"; HE_HDR="time,players_online,bedrock_cpu_pct,bedrock_mem,playit_session_expired_d,playit_error_d,playit_udp_reauth_d"
+[ -f "$EV" ] || echo "$EV_HDR" > "$EV"
+[ -f "$HE" ] || echo "$HE_HDR" > "$HE"
 
-echo "monitor: every ${INT}s -> $OUT  (watching $BED / $PLY)"
+# --- log rotation (docker json-file style: cap each file's size, keep N files) ----
+# When the active file reaches MAX_BYTES it becomes f.1; existing f.1→f.2 … and the
+# oldest (f.<MAX_FILES-1>) is dropped, so at most MAX_FILES files exist per stream
+# (the active one + MAX_FILES-1 rotated). A fresh active file re-gets its CSV header.
+MAX_BYTES="${MONITOR_LOG_MAX_BYTES:-10485760}"   # 10 MiB per file
+MAX_FILES="${MONITOR_LOG_MAX_FILES:-10}"         # files kept per stream, including the active one
+rotate_log() {  # $1=active file  $2=header line
+  _f="$1"; _hdr="$2"
+  _sz=$(wc -c < "$_f" 2>/dev/null | tr -d '[:space:]'); _sz=${_sz:-0}
+  [ "$_sz" -lt "$MAX_BYTES" ] && return
+  _i=$((MAX_FILES - 1)); rm -f "${_f}.${_i}" 2>/dev/null     # drop the oldest
+  while [ "$_i" -gt 1 ]; do
+    _j=$((_i - 1)); [ -f "${_f}.${_j}" ] && mv -f "${_f}.${_j}" "${_f}.${_i}"; _i=$_j
+  done
+  mv -f "$_f" "${_f}.1"; echo "$_hdr" > "$_f"
+}
+
+echo "monitor: every ${INT}s -> $OUT  (watching $BED / $PLY)  [rotate: ${MAX_FILES}x${MAX_BYTES}B/file]"
 
 # --- alerting setup (publishes to the ntfy bus; see scripts/notify-lib.sh) ----
 . "$(dirname "$0")/notify-lib.sh" 2>/dev/null || true
@@ -26,7 +43,7 @@ command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || tr
 CPU_ALERT="${MONITOR_CPU_ALERT:-300}"        # bedrock CPU% (box64 is multi-core, can exceed 100)
 MEM_ALERT="${MONITOR_MEM_ALERT:-2500}"       # bedrock memory, MiB — early warning for the heap crash
 COOLDOWN="${MONITOR_ALERT_COOLDOWN:-600}"    # seconds between "still high" reminders while an alarm holds
-la_cpu=0; la_mem=0; tunnel_down=0; cpu_alarm=0; mem_alarm=0; server_down=0; today="$(date -u +%Y-%m-%d)"
+la_cpu=0; la_mem=0; tunnel_down=0; cpu_alarm=0; mem_alarm=0; server_down=0; today="$(date -u +%Y-%m-%d)"; last_online=0
 # clear thresholds = 90% of the alert level (hysteresis, so alarms don't flap on/off)
 CPU_CLEAR=$((CPU_ALERT * 9 / 10)); MEM_CLEAR=$((MEM_ALERT * 9 / 10))
 
@@ -40,19 +57,49 @@ mem_mib() {  # integer MiB from a docker mem string (1.2GiB / 950MiB / 512KiB)
   esac
 }
 
+online_now() {  # authoritative current player count via the server's own `list`
+  # Echoes an integer, or "" if the server can't be reached. This is the source of
+  # truth: the net connects-disconnects tally drifts permanently whenever a crash/
+  # restart kills sessions without logging "Player disconnected".
+  _since=$(date -u +%Y-%m-%dT%H:%M:%S)
+  docker exec "$BED" send-command "list" >/dev/null 2>&1 || { echo ""; return; }
+  _i=0
+  while [ "$_i" -lt 20 ]; do                      # poll this list's output for ~2s (a just-restarted server under load can be slow to answer)
+    sleep 0.1
+    _cnt=$(docker logs --since "${_since}Z" "$BED" 2>&1 \
+      | sed -nE 's#.*There are ([0-9]+)/[0-9]+ players online.*#\1#p' | tail -1)
+    [ -n "$_cnt" ] && { echo "$_cnt"; return; }
+    _i=$((_i + 1))
+  done
+  echo ""
+}
+
 last="$(date -u +%Y-%m-%dT%H:%M:%S)"
 while true; do
   now="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  rotate_log "$EV" "$EV_HDR"; rotate_log "$HE" "$HE_HDR"   # roll over before this tick's appends
   # relog events since last tick -> events.csv  (time,event,player)
   docker logs --since "${last}Z" "$BED" 2>&1 \
     | grep -E "Player (connected|disconnected)" \
     | sed -E "s/\[([0-9: -]+):[0-9]{3} INFO\] Player (connected|disconnected): ([^,]+).*/\1,\2,\3/" \
     >> "$EV" 2>/dev/null
   last="$now"
-  # currently online = net connects-disconnects recorded so far
-  c="$(grep -c ',connected,' "$EV" 2>/dev/null)"; c="${c:-0}"
-  d="$(grep -c ',disconnected,' "$EV" 2>/dev/null)"; d="${d:-0}"
-  online=$((c - d)); [ "$online" -lt 0 ] && online=0
+  # liveness (also reused by the alert block below)
+  running=$(docker inspect -f '{{.State.Running}}' "$BED" 2>/dev/null || echo false)
+  health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$BED" 2>/dev/null || echo none)
+  # currently online: ask the server directly (the authoritative source). If `list`
+  # can't be reached this tick (e.g. a just-restarted server still booting under load),
+  # hold the last authoritative reading rather than the cumulative c-d tally — that
+  # tally drifts forever once a crash/restart drops a "disconnected" event, which is
+  # exactly how a fresh restart with 0 players gets misreported as "1 online".
+  online="$(online_now)"
+  if [ -n "$online" ]; then
+    last_online="$online"
+  elif [ "$running" = "true" ]; then
+    online="$last_online"
+  else
+    online=0; last_online=0     # container down ⇒ nobody online
+  fi
   # health + per-interval tunnel churn
   cpu="$(docker stats --no-stream --format '{{.CPUPerc}}' "$BED" 2>/dev/null | tr -d '%')"
   mem="$(docker stats --no-stream --format '{{.MemUsage}}' "$BED" 2>/dev/null | sed 's| /.*||; s/ //g')"
@@ -65,9 +112,8 @@ while true; do
   now_s=$(date +%s)
   # liveness: is the bedrock container actually running? Catches ANY down — a non-box64
   # crash, OOM-kill, manual stop, or a crash-loop that never recovers. The monitor is a
-  # separate container, so it stays up to report bedrock dying.
-  running=$(docker inspect -f '{{.State.Running}}' "$BED" 2>/dev/null || echo false)
-  health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$BED" 2>/dev/null || echo none)
+  # separate container, so it stays up to report bedrock dying. (running/health
+  # are computed once near the top of the loop.)
   if [ "$running" = "true" ] && [ "$health" != "unhealthy" ]; then
     [ "$server_down" -eq 1 ] && { publish_bus "✅ server back UP (container running again)" default "alert,white_check_mark"; server_down=0; }
   else
@@ -108,11 +154,20 @@ while true; do
   elif [ "$mem_alarm" -eq 1 ] && [ "${mem_i:-0}" -lt "$MEM_CLEAR" ]; then
     publish_bus "✅ memory back to normal: ${mem_i}MiB (cleared the ${MEM_ALERT}MiB alarm)" default "alert,white_check_mark"; mem_alarm=0
   fi
-  # daily digest at UTC-midnight rollover (counts are cumulative since CSV start)
+  # daily digest at UTC-midnight rollover. OFF by default: the richer UK-time uptime
+  # graph (host launchd `com.mcserver.uptime`, scripts/uptime.sh) is the daily digest now,
+  # so we don't double-post to #monitoring. Re-enable this lightweight in-container text
+  # digest with MONITOR_INLINE_DIGEST=1. Counts are cumulative since the logs began and
+  # span rotated files ("$EV".* / "$HE".*) so a rotation doesn't reset them (header lines
+  # score 0 in the awk/grep, so they're harmless in the merged stream).
   d_now="$(date -u +%Y-%m-%d)"
   if [ "$d_now" != "$today" ]; then
-    pk=$(awk -F, 'NR>1{if($2+0>m)m=$2+0} END{print m+0}' "$HE" 2>/dev/null)
-    publish_bus "📊 daily digest: peak ${pk:-0} online, ${c:-0} joins / ${d:-0} leaves (relog proxy)" default "monitor,bar_chart"
+    if [ "${MONITOR_INLINE_DIGEST:-0}" = "1" ]; then
+      c=$(cat "$EV" "$EV".* 2>/dev/null | grep -c ',connected,'); c="${c:-0}"
+      d=$(cat "$EV" "$EV".* 2>/dev/null | grep -c ',disconnected,'); d="${d:-0}"
+      pk=$(cat "$HE" "$HE".* 2>/dev/null | awk -F, '{if($2+0>m)m=$2+0} END{print m+0}')
+      publish_bus "📊 daily digest: peak ${pk:-0} online, ${c:-0} joins / ${d:-0} leaves (relog proxy)" default "monitor,bar_chart"
+    fi
     today="$d_now"
   fi
   # health-aware ping to healthchecks.io each tick:
