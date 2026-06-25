@@ -15,3 +15,6 @@ wetransfer_*/
 *.tmp
 .env.bak-*
 .DS_Store
+
+# Goblin Bot Python venv (discord.py) — local, never commit
+scripts/.botvenv/

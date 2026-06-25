@@ -3,11 +3,12 @@
 #   1) prints it to this container's log  (docker logs mc-bridge / just bridge-logs)
 #   2) forwards it to the matching Discord CHANNEL via webhook, routed by category.
 #
-# Category is the FIRST ntfy tag on each event: player | alert | monitor.
+# Category is the FIRST ntfy tag on each event: player | alert | monitor | chat.
 # Each category maps to its own channel webhook, falling back to DISCORD_WEBHOOK_URL:
 #   player  → DISCORD_WEBHOOK_PLAYER    (#player-activity)
 #   alert   → DISCORD_WEBHOOK_SERVER_STATUS     (#server-status)
 #   monitor → DISCORD_WEBHOOK_MONITOR   (#monitoring)
+#   chat    → DISCORD_WEBHOOK_CHAT      (#in-game-chat)
 #   (anything else, or a category with no specific hook) → DISCORD_WEBHOOK_URL
 #
 # Runs as the `bridge` compose service (curlimages/curl image: has curl + /bin/sh).
@@ -17,13 +18,14 @@ SERVER="${NTFY_SERVER:-https://ntfy.sh}"
 W_PLAYER="${DISCORD_WEBHOOK_PLAYER:-}"
 W_ALERT="${DISCORD_WEBHOOK_SERVER_STATUS:-}"
 W_MONITOR="${DISCORD_WEBHOOK_MONITOR:-}"
+W_CHAT="${DISCORD_WEBHOOK_CHAT:-}"
 W_DEFAULT="${DISCORD_WEBHOOK_URL:-}"
 
 # crude but dependency-free JSON string extractor (no jq in this image)
 field() { echo "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
 
 # classify by the first recognised category tag, else "other"
-category() { for c in player alert monitor; do case "$1" in *"\"$c\""*) echo "$c"; return;; esac; done; echo other; }
+category() { for c in player alert monitor chat; do case "$1" in *"\"$c\""*) echo "$c"; return;; esac; done; echo other; }
 
 # pick the channel webhook for a category, with fallback to the default hook
 hook_for() {
@@ -31,13 +33,14 @@ hook_for() {
     player)  echo "${W_PLAYER:-$W_DEFAULT}" ;;
     alert)   echo "${W_ALERT:-$W_DEFAULT}" ;;
     monitor) echo "${W_MONITOR:-$W_DEFAULT}" ;;
+    chat)    echo "$W_CHAT" ;;   # NO default fallback: chat is high-volume, so stay silent until #in-game-chat is configured
     *)       echo "$W_DEFAULT" ;;
   esac
 }
 
 on() { [ -n "$1" ] && echo ON || echo off; }
 echo "bridge: subscribing to $SERVER/$TOPIC"
-echo "  channels → player:$(on "$W_PLAYER")  alert:$(on "$W_ALERT")  monitor:$(on "$W_MONITOR")  default:$(on "$W_DEFAULT")"
+echo "  channels → player:$(on "$W_PLAYER")  alert:$(on "$W_ALERT")  monitor:$(on "$W_MONITOR")  chat:$(on "$W_CHAT")  default:$(on "$W_DEFAULT")"
 
 while true; do
   # -N = no buffering; ntfy streams one JSON object per line, plus keepalive/open events

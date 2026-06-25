@@ -44,6 +44,14 @@ CPU_ALERT="${MONITOR_CPU_ALERT:-300}"        # bedrock CPU% (box64 is multi-core
 MEM_ALERT="${MONITOR_MEM_ALERT:-2500}"       # bedrock memory, MiB — early warning for the heap crash
 COOLDOWN="${MONITOR_ALERT_COOLDOWN:-600}"    # seconds between "still high" reminders while an alarm holds
 la_cpu=0; la_mem=0; tunnel_down=0; cpu_alarm=0; mem_alarm=0; server_down=0; today="$(date -u +%Y-%m-%d)"; last_online=0
+# tunnel boot-grace: a just-(re)started playit takes longer than one interval to
+# authenticate and bring the tunnel up, so "no heartbeat yet" right after the stack
+# restarts is EXPECTED — not an outage. tunnel_seen latches once we've actually seen
+# the tunnel up this session (so a real drop is still caught instantly); until then we
+# stay quiet for TUNNEL_GRACE seconds so the monitor doesn't false-fire "TUNNEL DOWN"
+# the instant everything comes back up. After the grace, a tunnel that never came up
+# IS reported (covers a genuinely broken tunnel at boot).
+tunnel_seen=0; START_TS=$(date +%s); TUNNEL_GRACE="${MONITOR_TUNNEL_GRACE:-150}"
 # clear thresholds = 90% of the alert level (hysteresis, so alarms don't flap on/off)
 CPU_CLEAR=$((CPU_ALERT * 9 / 10)); MEM_CLEAR=$((MEM_ALERT * 9 / 10))
 
@@ -120,17 +128,25 @@ while true; do
     [ "$server_down" -eq 0 ] && { publish_bus "🔴 SERVER DOWN — bedrock is not serving (running=$running health=$health)" urgent "alert,red_circle"; server_down=1; }
   fi
   # crash: box64 heap corruption. The monitor survives the auto-restart, so it sees it.
-  cr=$(docker logs --since "${INT}s" "$BED" 2>&1 | grep -c 'free(): invalid next size')
+  cr=$(docker logs --since "${INT}s" "$BED" 2>&1 | grep -ciE 'invalid next size|corrupted size vs|double free or corruption')
   [ "${cr:-0}" -gt 0 ] && publish_bus "💥 SERVER CRASH x${cr} (box64 heap corruption) — auto-restarting" urgent "alert,boom,skull"
   # recovery / ready
   rb=$(docker logs --since "${INT}s" "$BED" 2>&1 | grep -c 'Server started\.')
   [ "${rb:-0}" -gt 0 ] && publish_bus "✅ server is up (ready for players)" default "alert,white_check_mark"
   # tunnel heartbeat: playit prints "tunnel running" ~every 3s; silence ⇒ down
   trn=$(docker logs --since "${INT}s" "$PLY" 2>&1 | grep -c 'tunnel running')
-  if [ "${trn:-0}" -eq 0 ]; then
-    [ "$tunnel_down" -eq 0 ] && { publish_bus "📡 TUNNEL DOWN — friends can't join (no playit heartbeat in ${INT}s)" urgent "alert,satellite,warning"; tunnel_down=1; }
-  elif [ "$tunnel_down" -eq 1 ]; then
-    publish_bus "✅ tunnel back up" default "alert,white_check_mark"; tunnel_down=0
+  if [ "${trn:-0}" -gt 0 ]; then
+    tunnel_seen=1
+    [ "$tunnel_down" -eq 1 ] && { publish_bus "✅ tunnel back up" default "alert,white_check_mark"; tunnel_down=0; }
+  else
+    # No heartbeat this tick. Suppress "DOWN" during the boot-grace window unless we've
+    # already confirmed the tunnel was up this session (see tunnel_seen above) — this is
+    # what stops the spurious "TUNNEL DOWN" that used to fire the moment the stack came
+    # back up (the monitor restarts with tunnel_down=0 and out-races playit's first beat).
+    if [ "$tunnel_down" -eq 0 ] \
+       && { [ "$tunnel_seen" -eq 1 ] || [ $((now_s - START_TS)) -ge "$TUNNEL_GRACE" ]; }; then
+      publish_bus "📡 TUNNEL DOWN — friends can't join (no playit heartbeat in ${INT}s)" urgent "alert,satellite,warning"; tunnel_down=1
+    fi
   fi
   # resource alarms: fire on breach, re-remind every COOLDOWN while held, CLEAR when
   # it drops below 90% of the threshold (hysteresis prevents flapping).

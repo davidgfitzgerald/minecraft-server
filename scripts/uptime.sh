@@ -38,7 +38,11 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 not found"; exit 1; }
 python3 -c "import matplotlib" 2>/dev/null || { echo "python3 matplotlib not installed (pip install matplotlib)"; exit 1; }
 
 PNG="$(mktemp -t uptime).png"
-CRASHES=$(docker logs bedrock 2>&1 | grep -c 'free(): invalid next size' 2>/dev/null || echo 0)
+# grep -c already prints "0" on no matches (but exits 1) — so `|| echo 0` would append a
+# SECOND "0", yielding the multi-line "0\n0" that broke --crashes. Swallow the exit, strip
+# to digits, default to 0.
+CRASHES=$(docker logs bedrock 2>&1 | grep -c 'free(): invalid next size' || true)
+CRASHES=$(printf '%s' "${CRASHES:-0}" | tr -dc '0-9'); CRASHES=${CRASHES:-0}
 
 echo "→ rendering uptime graph (${SPEC:-last 24h}) ..."
 SUMMARY=$(python3 scripts/uptime_graph.py --health bedrock-data/monitoring/health.csv \

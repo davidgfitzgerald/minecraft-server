@@ -7,9 +7,9 @@ set dotenv-load          # load .env so LEVEL_NAME (and other config) reach the 
 # the active world folder name (under bedrock-data/worlds/) — set LEVEL_NAME in .env
 world := env_var_or_default("LEVEL_NAME", "world")
 
-# flag file marking an INTENTIONAL (manual) stop. `maintenance-down` writes it; the
-# next start (up/restart/recreate/maintenance-up) sees it, announces the return to
-# Discord (prompting for a message), and clears it. (bedrock-data/ is gitignored.)
+# flag file marking an INTENTIONAL (manual) stop. `down` writes it; the next start
+# (up/restart/recreate) sees it, announces the return to Discord (prompting for a
+# message), and clears it. (bedrock-data/ is gitignored.)
 maint_flag := "bedrock-data/.maintenance"
 
 # show all recipes
@@ -18,19 +18,56 @@ default:
 
 # ───────────────────────── server lifecycle ─────────────────────────
 
-# start the stack (server + tunnel) — guarded: blocks if a player is online (config changes can recreate)
-up:
-    @./scripts/guard.sh "start/refresh the stack (just up — may recreate changed containers)" players-only
-    @echo "starting stack ..."
+# start the stack (server + tunnel) — guarded: blocks if a player is online (config changes can recreate).
+# If returning from a `just down`, waits for readiness then announces the return to #server-status.
+# Prompts for a message (Enter = default); pass one inline to skip:  just up "We're back!"
+up MSG="":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ./scripts/guard.sh "start/refresh the stack (just up — may recreate changed containers)" players-only || exit 1
+    echo "starting stack ..."
     docker compose up -d
-    @just _on-start    # if returning from a manual stop, announce the return to Discord
+    # only when returning from an intentional stop: wait for the server to accept commands before announcing
+    if [ -f "{{maint_flag}}" ]; then
+      printf "→ waiting for the server to accept commands "
+      for i in $(seq 1 30); do
+        if docker exec bedrock send-command "list" >/dev/null 2>&1; then echo " ready"; break; fi
+        printf "."; sleep 2
+      done
+    fi
+    just _on-start "{{MSG}}"   # if returning from a manual stop, announce the return to Discord
+    ./scripts/reconcile.sh || true   # backfill any join/leave that was missed while down (phantom-online fix)
 
-# stop & remove the stack (guarded; archives logs first — `down` destroys the container's logs)
-down:
-    @./scripts/guard.sh "stop & remove the stack (just down)"
-    @echo "stopping and removing stack ..."
-    @just _archive-logs
+# stop & remove the stack (guarded; archives logs first — `down` destroys the container's logs).
+# Announces to #server-status and silences the monitor first so it doesn't fire its own DOWN alert
+# (hc.io is NOT paused — downtime shows truthfully). Pass a message inline:  just down "Laptop off a while"
+down MSG="":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ./scripts/guard.sh "stop & remove the stack (just down)" || exit 1
+    MSG="{{MSG}}"
+    if [ -z "$MSG" ] && [ -t 0 ]; then
+      printf "💬 Discord message for #server-status to announce the server is going down (Enter for default): "
+      read -r MSG
+    fi
+    [ -z "$MSG" ] && MSG="Server going down — back soon. 🐐"
+    MSG="🛠️ ${MSG}"   # always flag #server-status DOWN announcements with the maintenance emoji
+    echo "→ announcing to #server-status ..."
+    ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,wrench,construction" ) || true
+    # disconnect online players cleanly FIRST — while the watcher + bridge are still up —
+    # so their "left" reaches #player-activity instead of leaving a phantom-online entry.
+    ./scripts/graceful-kick.sh || true
+    echo "stopping and removing stack ..."
+    just _archive-logs
+    # stop monitor+bridge FIRST so they don't publish their own DOWN alert as bedrock stops
+    # (hc.io still goes down on its own once pings stop — that's the truthful signal we want)
+    echo "→ stopping monitor + bridge ..."
+    docker compose stop monitor bridge 2>/dev/null || true
     docker compose down
+    # mark this as an intentional stop so the NEXT start (up/restart/recreate) announces the return
+    mkdir -p "$(dirname "{{maint_flag}}")"
+    printf 'down_at=%s\nmsg=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MSG" > "{{maint_flag}}"
+    echo "✅ down complete — stack stopped & removed. hc.io will show DOWN shortly."
 
 # restart just the bedrock server (guarded; reuses container, so logs are kept).
 # Always prompts for a #server-status message (Enter = default); pass one inline to skip: just restart "Quick bounce"
@@ -39,6 +76,7 @@ restart MSG="":
     @echo "restarting bedrock server ..."
     docker compose restart bedrock
     @just _on-start "{{MSG}}" force    # always announce the return to Discord (prompts for a message)
+    @./scripts/reconcile.sh || true    # backfill any join/leave missed across the bounce
 
 # recreate containers (guarded; needed after editing docker-compose.yml; archives logs first)
 recreate:
@@ -47,6 +85,7 @@ recreate:
     @just _archive-logs
     docker compose up -d --force-recreate
     @just _on-start    # if returning from a manual stop, announce the return to Discord
+    @./scripts/reconcile.sh || true    # backfill any join/leave missed across the recreate
 
 # internal: snapshot the CURRENT container logs to bedrock-data/logs/ before they're lost
 _archive-logs:
@@ -108,6 +147,43 @@ cmd +CMD:
     @echo "running cmd: {{CMD}} ..."
     docker exec bedrock send-command "{{CMD}}"
 
+# broadcast a chat message to EVERYONE in-game (no quotes needed):  just say dinner in 10 mins
+say +MSG:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    docker exec bedrock send-command "say {{MSG}}" >/dev/null 2>&1 \
+      && echo "→ sent to in-game chat: {{MSG}}" \
+      || { echo "❌ server not reachable — is it up? try: just status"; exit 1; }
+    bash scripts/chat-relay.sh "{{MSG}}"   # mirror server broadcasts into #in-game-chat
+
+# broadcast a STYLED message to EVERYONE in-game via tellraw (supports §-colour codes,
+# more visible than `say`):  just say-raw "§6§lHeads up!§r §7dinner in 10"
+say-raw +MSG:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # tellraw @a renders §-formatting and is harder to miss than a plain [Server] line.
+    docker exec bedrock send-command 'tellraw @a {"rawtext":[{"text":"{{MSG}}"}]}' >/dev/null 2>&1 \
+      && echo "→ broadcast to everyone in-game: {{MSG}}" \
+      || { echo "❌ server not reachable — is it up? try: just status"; exit 1; }
+    bash scripts/chat-relay.sh "{{MSG}}"   # mirror server broadcasts into #in-game-chat (§-codes stripped)
+
+# TEST the in-game-chat relay WITHOUT logging in: fires a fake chat line through the
+# chat-bridge pack → #in-game-chat.  e.g.  just chattest hello from the console
+chattest +MSG:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    docker exec bedrock send-command "scriptevent goblin:chattest {{MSG}}" >/dev/null 2>&1 \
+      && echo "→ fired test chat: '{{MSG}}' — check #in-game-chat in a second or two" \
+      || { echo "❌ server not reachable — is it up? (just status)"; exit 1; }
+
+# whisper to ONE player (gamertag first):  just tell ToiletBoiler531 your base is on fire
+tell PLAYER +MSG:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    docker exec bedrock send-command "tell {{PLAYER}} {{MSG}}" >/dev/null 2>&1 \
+      && echo "→ whispered to {{PLAYER}}: {{MSG}}" \
+      || { echo "❌ server not reachable — is it up? try: just status"; exit 1; }
+
 # print the public playit tunnel address
 tunnel:
     @echo "printing tunnel address ..."
@@ -116,7 +192,7 @@ tunnel:
 # crash check for this container-life
 crashes:
     @echo "checking for crashes ..."
-    @echo "free() crashes since boot: $(docker logs bedrock 2>&1 | grep -c 'free(): invalid next size')"
+    @echo "heap-corruption crashes since boot: $(docker logs bedrock 2>&1 | grep -ciE 'invalid next size|corrupted size vs|double free or corruption')"
 
 # ───────────────────────── notifications ────────────────────────────
 
@@ -124,6 +200,18 @@ crashes:
 notify:
     @echo "running notify ..."
     @./scripts/notify.sh
+
+# reconcile #player-activity against the logs NOW — backfill any join/leave the live
+# watcher missed (crash / kill / laptop asleep) so phantom-online players are healed.
+# Runs automatically on up/restart/recreate; run it by hand any time too.
+reconcile:
+    @echo "running reconcile ..."
+    @./scripts/reconcile.sh
+
+# preview reconcile WITHOUT posting or touching the ledger (shows what it would backfill)
+reconcile-preview:
+    @echo "running reconcile (dry-run) ..."
+    @RECONCILE_DRY_RUN=1 ./scripts/reconcile.sh
 
 # test notifications WITHOUT logging in: starts the watcher, triggers the `list` line, waits
 notify-test:
@@ -152,6 +240,34 @@ notify-uninstall:
 notify-running:
     @echo "checking notify agent ..."
     @./scripts/notify-agent.sh status
+
+# ───────────── Goblin Bot: Discord #in-game-chat → Minecraft in-game chat ─────────────
+# Needs GOBLIN_BOT_TOKEN + IN_GAME_CHAT_CHANNEL_ID in .env. First use auto-creates an
+# isolated venv and installs discord.py. The reverse direction (game → Discord) is the
+# chat-bridge pack, not this bot.
+
+# run the bot in the FOREGROUND to test it live (Ctrl-C to stop)
+bot-run:
+    @./scripts/goblin-bot-agent.sh run
+
+# install the bot as a permanent background agent (starts at login, auto-restarts)
+bot-install:
+    @echo "installing goblin-bot agent ..."
+    @./scripts/goblin-bot-agent.sh install
+
+# stop & remove the permanent background bot
+bot-uninstall:
+    @echo "removing goblin-bot agent ..."
+    @./scripts/goblin-bot-agent.sh uninstall
+
+# is the permanent background bot running?
+bot-running:
+    @echo "checking goblin-bot agent ..."
+    @./scripts/goblin-bot-agent.sh status
+
+# tail the bot's log (shows each Discord→Minecraft relay)
+bot-logs:
+    @tail -n 40 -f bedrock-data/logs/goblin-bot-agent.log
 
 # ───────────────────────── backup / restore ─────────────────────────
 
@@ -326,57 +442,12 @@ analyze:
     docker logs bedrock 2>&1 | grep -E "Player (connected|disconnected)" | sed -E 's/\[([0-9: -]+):[0-9]{3} INFO\] Player (connected|disconnected): ([^,]+).*/\1  \2  \3/'
     echo; echo "== playit anomalies (session-expired / ERROR) =="
     docker logs playit 2>&1 | grep -iE "session expired|ERROR" | sed -E 's/\.[0-9]+Z//' | tail -10
-    echo; echo "== free() crashes: $(docker logs bedrock 2>&1 | grep -c 'free(): invalid next size') =="
-
-# ───────────────────────── maintenance (planned downtime) ───────────
-# Take the stack down for planned maintenance WITHOUT tripping alerts:
-# announce to #server-status, pause healthchecks.io, silence the monitor, then stop.
-# Optional custom message:  just maintenance-down "Laptop off for a few hours"
-
-# announce + stop the stack (guarded). hc.io is NOT paused — the downtime is left to
-# show truthfully on the check (and in #server-status via its integration).
-maintenance-down MSG="":
-    #!/usr/bin/env bash
-    set -uo pipefail
-    ./scripts/guard.sh "maintenance shutdown (just maintenance-down)" || exit 1
-    MSG="{{MSG}}"
-    [ -z "$MSG" ] && MSG="🛠️ Server going down for planned maintenance — back soon. 🐐"
-    echo "→ announcing maintenance to #server-status ..."
-    ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,wrench,construction" ) || true
-    # stop monitor+bridge FIRST so they don't double-publish their own DOWN alert
-    # (hc.io still goes down on its own once pings stop — that's the truthful signal we want)
-    echo "→ stopping monitor + bridge ..."
-    docker compose stop monitor bridge 2>/dev/null || true
-    # then stop the server + tunnel (kept, not removed — logs & state survive for a quick resume)
-    echo "→ stopping bedrock + playit ..."
-    docker compose stop bedrock playit
-    # mark this as an intentional stop so the NEXT start (any of up/restart/recreate/
-    # maintenance-up) knows to announce the return to Discord and prompt for a message.
-    mkdir -p "$(dirname "{{maint_flag}}")"
-    printf 'down_at=%s\nmsg=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MSG" > "{{maint_flag}}"
-    echo "✅ maintenance-down complete — stack stopped. hc.io will show DOWN shortly. Resume with ANY of: just up / restart / recreate / maintenance-up"
-
-# bring everything back: start stack → wait ready → restart monitoring → resume + announce
-# (announce/prompt is shared with up/restart/recreate via _on-start; `force` = always announce)
-maintenance-up MSG="":
-    #!/usr/bin/env bash
-    set -uo pipefail
-    echo "→ starting stack (bedrock + playit + monitor + bridge) ..."
-    docker compose up -d
-    printf "→ waiting for the server to accept commands "
-    ready=0
-    for i in $(seq 1 30); do
-      if docker exec bedrock send-command "list" >/dev/null 2>&1; then ready=1; echo " ready"; break; fi
-      printf "."; sleep 2
-    done
-    [ "$ready" -eq 1 ] || echo " (timed out after ~60s — continuing anyway; check: just status)"
-    just _on-start "{{MSG}}" force
-    echo "✅ maintenance-up complete — stack up, monitoring live."
+    echo; echo "== heap-corruption crashes: $(docker logs bedrock 2>&1 | grep -ciE 'invalid next size|corrupted size vs|double free or corruption') =="
 
 # internal: shared "server is starting" hook. If we're returning from an intentional stop
-# (maintenance-down left the flag) OR force is set, announce the return to Discord — using
+# (a `just down` left the flag) OR force is set, announce the return to Discord — using
 # MSG, else prompting interactively (Enter = default), else the default — then clear the
-# flag. Called by up/restart/recreate/maintenance-up. (hc.io is never paused, so no resume.)
+# flag. Called by up/restart/recreate. (hc.io is never paused, so no resume.)
 _on-start MSG="" FORCE="":
     #!/usr/bin/env bash
     set -uo pipefail
@@ -387,7 +458,8 @@ _on-start MSG="" FORCE="":
       printf "💬 Discord message for #server-status to announce the server is back (Enter for default): "
       read -r MSG
     fi
-    [ -z "$MSG" ] && MSG="✅ Server is back up. Reconnect and have fun! 🐐"
+    [ -z "$MSG" ] && MSG="Server is back up. Reconnect and have fun! 🐐"
+    MSG="🟢 ${MSG}"   # always flag #server-status UP announcements as "server back online"
     echo "→ announcing return-to-service to #server-status ..."
     ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,white_check_mark" ) || true
     rm -f "{{maint_flag}}"

@@ -15,6 +15,7 @@ services:
     logging: *default-logging
     environment:
       EULA: "TRUE"
+      TZ: "Europe/London"        # log timestamps in UK time (BST/GMT) so they match Discord + the uptime graph
       SERVER_NAME: ${SERVER_NAME:-bedrock}
       LEVEL_NAME: ${LEVEL_NAME:-world}
       GAMEMODE: "survival"
@@ -22,6 +23,8 @@ services:
       PLAYER_IDLE_TIMEOUT: "240"  # minutes (4h) before an idle player is kicked; was 30
       VERSION: "LATEST"          # tracks the current Bedrock version so it matches auto-updated clients
       VIEW_DISTANCE: "12"        # was 32 — huge per-join chunk spike was tipping box64 over the edge
+      # surface Script API console output + errors in `docker logs bedrock` (chat-bridge debugging)
+      CONTENT_LOG_CONSOLE_OUTPUT_ENABLED: "true"
       # --- box64 emulation (x86 Bedrock server on Apple Silicon) ---
       # JIT ON for correct, full-speed gameplay (redstone/drops work). STRONGMEM
       # reduces — but does not eliminate — the intermittent heap-corruption crash.
@@ -96,6 +99,7 @@ services:
       DISCORD_WEBHOOK_PLAYER: ${DISCORD_WEBHOOK_PLAYER:-}    # #player-activity (joins/leaves)
       DISCORD_WEBHOOK_SERVER_STATUS: ${DISCORD_WEBHOOK_SERVER_STATUS:-}      # #server-status (crash/tunnel/resource)
       DISCORD_WEBHOOK_MONITOR: ${DISCORD_WEBHOOK_MONITOR:-}  # #monitoring (daily digest)
+      DISCORD_WEBHOOK_CHAT: ${DISCORD_WEBHOOK_CHAT:-}        # #in-game-chat (relayed via the chat-bridge pack)
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}          # fallback / catch-all
     volumes:
       - ./scripts:/scripts:ro
