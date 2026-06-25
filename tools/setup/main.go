@@ -550,9 +550,10 @@ func (m model) viewDone() string {
 			b.WriteString("  " + stOK.Render("✓") + " " + a.label + "\n")
 		case "fail":
 			b.WriteString("  " + stBad.Render("✗") + " " + a.label + "\n")
-			if a.out != "" {
-				b.WriteString(stSub.Render("      "+firstLine(a.out)) + "\n")
+			for _, ln := range tailLines(a.out, 6) {
+				b.WriteString(stSub.Render("      "+ln) + "\n")
 			}
+			b.WriteString(stSub.Render("      ↳ re-run `just setup` (idempotent) or the command above directly.") + "\n")
 		default:
 			b.WriteString("  " + stSub.Render("• skipped: "+a.label) + "\n")
 		}
@@ -564,11 +565,19 @@ func (m model) viewDone() string {
 	return b.String()
 }
 
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i] + " …"
+// tailLines returns up to the last n non-empty lines of s — the actual error from a
+// failed command lives at the end of its output, not the first line.
+func tailLines(s string, n int) []string {
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.TrimSpace(ln) != "" {
+			out = append(out, strings.TrimRight(ln, " \t"))
+		}
 	}
-	return s
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
 }
 
 func projectRoot() string {

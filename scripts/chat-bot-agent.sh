@@ -72,7 +72,11 @@ install_agent() {
 </plist>
 EOF
   launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true   # in case it's already loaded
-  launchctl bootstrap "$DOMAIN" "$PLIST"
+  # bootstrap can transiently fail with "Input/output error" if the previous instance
+  # isn't fully torn down yet — wait for it to leave, then retry a couple of times.
+  for _ in 1 2 3 4 5 6; do launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break; sleep 0.5; done
+  for _ in 1 2 3; do launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null && break; sleep 1; done
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || { echo "❌ launchctl bootstrap failed for $LABEL"; exit 1; }
   echo "✅ installed + started: $LABEL"
   echo "   bridging : Discord #in-game-chat → Minecraft (tellraw)"
   echo "   agent log: bedrock-data/logs/chat-bot-agent.log"
