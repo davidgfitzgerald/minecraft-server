@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install / uninstall / inspect / run the Goblin Bot — the Discord→Minecraft chat bridge
-# (scripts/goblin-bot.py). Like the notify agent, it runs permanently via launchd: starts
+# Install / uninstall / inspect / run the chat bot — the Discord→Minecraft chat bridge
+# (scripts/chat-bot.py). Like the notify agent, it runs permanently via launchd: starts
 # at login, auto-restarts (KeepAlive). discord.py lives in an isolated venv so we don't
 # touch the system Python. macOS host only.
 #
@@ -10,7 +10,7 @@
 #   just bot-running     # is it alive?
 set -euo pipefail
 
-LABEL="com.mcserver.goblinbot"
+LABEL="com.mcserver.chatbot"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # project root (this script lives in scripts/)
 DOMAIN="gui/$(id -u)"
@@ -28,8 +28,8 @@ ensure_venv() {
 }
 
 check_creds() {
-  if ! grep -qE '^GOBLIN_BOT_TOKEN=.+' "$DIR/.env" 2>/dev/null; then
-    echo "❌ GOBLIN_BOT_TOKEN is empty in .env — paste your (reset) bot token there first."; return 1
+  if ! grep -qE '^CHAT_BOT_TOKEN=.+' "$DIR/.env" 2>/dev/null; then
+    echo "❌ CHAT_BOT_TOKEN is empty in .env — paste your (reset) bot token there first."; return 1
   fi
   if ! grep -qE '^IN_GAME_CHAT_CHANNEL_ID=[0-9]+' "$DIR/.env" 2>/dev/null; then
     echo "❌ IN_GAME_CHAT_CHANNEL_ID is not set in .env."; return 1
@@ -39,8 +39,8 @@ check_creds() {
 run_foreground() {
   check_creds || exit 1
   ensure_venv
-  echo "→ starting Goblin Bot in the foreground (Ctrl-C to stop) ..."
-  cd "$DIR" && exec "$PY" "$DIR/scripts/goblin-bot.py"
+  echo "→ starting Chat bot in the foreground (Ctrl-C to stop) ..."
+  cd "$DIR" && exec "$PY" "$DIR/scripts/chat-bot.py"
 }
 
 install_agent() {
@@ -56,7 +56,7 @@ install_agent() {
   <key>ProgramArguments</key>
   <array>
     <string>$PY</string>
-    <string>$DIR/scripts/goblin-bot.py</string>
+    <string>$DIR/scripts/chat-bot.py</string>
   </array>
   <key>WorkingDirectory</key><string>$DIR</string>
   <key>EnvironmentVariables</key>
@@ -66,8 +66,8 @@ install_agent() {
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>$DIR/bedrock-data/logs/goblin-bot-agent.log</string>
-  <key>StandardErrorPath</key><string>$DIR/bedrock-data/logs/goblin-bot-agent.log</string>
+  <key>StandardOutPath</key><string>$DIR/bedrock-data/logs/chat-bot-agent.log</string>
+  <key>StandardErrorPath</key><string>$DIR/bedrock-data/logs/chat-bot-agent.log</string>
 </dict>
 </plist>
 EOF
@@ -75,7 +75,7 @@ EOF
   launchctl bootstrap "$DOMAIN" "$PLIST"
   echo "✅ installed + started: $LABEL"
   echo "   bridging : Discord #in-game-chat → Minecraft (tellraw)"
-  echo "   agent log: bedrock-data/logs/goblin-bot-agent.log"
+  echo "   agent log: bedrock-data/logs/chat-bot-agent.log"
   echo "   starts at login, restarts itself if it dies. Stop/remove: just bot-uninstall"
 }
 

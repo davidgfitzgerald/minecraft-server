@@ -1,6 +1,8 @@
 # ── Secrets — NEVER commit ──
+# ...but DO track the (secret-free) template the wizard fills in (no trailing comments — gitignore treats them as part of the pattern)
 .env
 .env.*
+!.env.example
 
 # ── Local Claude Code overrides (permissions, etc.) ──
 .claude/settings.local.json
@@ -16,7 +18,7 @@ wetransfer_*/
 .env.bak-*
 .DS_Store
 
-# Goblin Bot Python venv (discord.py) — local, never commit
+# Chat bot Python venv (discord.py) — local, never commit
 scripts/.botvenv/
 
 tools/setup/setup

@@ -72,7 +72,7 @@ var steps = []step{
 	{key: "DISCORD_WEBHOOK_SERVER_STATUS", label: "Discord webhook · #server-status", help: "Optional. Crash / tunnel / up-down / resource alerts. Blank = skip."},
 	{key: "DISCORD_WEBHOOK_MONITOR", label: "Discord webhook · #monitoring", help: "Optional. Daily digest + uptime graph. Blank = skip."},
 	{key: "DISCORD_WEBHOOK_CHAT", label: "Discord webhook · #in-game-chat", help: "Optional. In-game chat is relayed here. Blank = skip."},
-	{key: "GOBLIN_BOT_TOKEN", label: "Discord bot token (2-way chat)", help: "Optional. Lets Discord #in-game-chat post INTO the game. Enable MESSAGE CONTENT INTENT. Blank = skip.", link: "https://discord.com/developers/applications"},
+	{key: "CHAT_BOT_TOKEN", label: "Discord bot token (2-way chat)", help: "Optional. Lets Discord #in-game-chat post INTO the game. Enable MESSAGE CONTENT INTENT. Blank = skip.", link: "https://discord.com/developers/applications"},
 	{key: "IN_GAME_CHAT_CHANNEL_ID", label: "#in-game-chat channel ID", help: "Optional, needed with the bot token. Developer Mode → right-click channel → Copy Channel ID."},
 	{key: "HEALTHCHECK_URL", label: "healthchecks.io ping URL", help: "Optional. Powers the uptime graph + off-network down alerts. Blank = skip.", link: "https://healthchecks.io"},
 	{key: "HEALTHCHECK_API_KEY", label: "healthchecks.io API key", help: "Optional, needed with the ping URL for the uptime graph's status strip."},
@@ -329,9 +329,9 @@ func (m *model) buildActions() {
 	} else {
 		a[2].selected = m.values["HEALTHCHECK_URL"] != ""
 	}
-	if m.values["GOBLIN_BOT_TOKEN"] != "" {
-		ba := action{label: "Install Discord→Minecraft chat bot  (just bot-install)", cmd: []string{"just", "bot-install"}, selected: !agentLoaded("com.mcserver.goblinbot")}
-		if agentLoaded("com.mcserver.goblinbot") {
+	if m.values["CHAT_BOT_TOKEN"] != "" {
+		ba := action{label: "Install Discord→Minecraft chat bot  (just bot-install)", cmd: []string{"just", "bot-install"}, selected: !agentLoaded("com.mcserver.chatbot")}
+		if agentLoaded("com.mcserver.chatbot") {
 			ba.note = "(already installed)"
 		}
 		a = append(a, ba)
@@ -438,20 +438,28 @@ func (m model) View() string {
 	case stageActions:
 		return m.viewActions()
 	case stageRun:
-		return header() + "\n  Running selected steps… (this can take a few seconds)\n"
+		return m.header() + "\n  Running selected steps… (this can take a few seconds)\n"
 	case stageDone:
 		return m.viewDone()
 	}
 	return ""
 }
 
-func header() string {
-	return stTitle.Render("🐐 Cobblestone Goblins — server setup") + "\n"
+func (m model) header() string {
+	name := m.values["SERVER_NAME"]
+	if name == "" {
+		name = m.existing["SERVER_NAME"]
+	}
+	title := "Minecraft Bedrock — server setup"
+	if name != "" {
+		title = name + " — server setup"
+	}
+	return stTitle.Render(title) + "\n"
 }
 
 func (m model) viewReq() string {
 	var b strings.Builder
-	b.WriteString(header() + "\n")
+	b.WriteString(m.header() + "\n")
 	b.WriteString(stSub.Render("Checking your machine for the tools this stack needs:") + "\n\n")
 	blocking := false
 	for _, r := range m.reqs {
@@ -481,7 +489,7 @@ func (m model) viewReq() string {
 func (m model) viewConfig() string {
 	s := steps[m.idx]
 	var b strings.Builder
-	b.WriteString(header() + "\n")
+	b.WriteString(m.header() + "\n")
 	b.WriteString(stSub.Render(fmt.Sprintf("Step %d of %d", m.idx+1, len(steps))) + "\n\n")
 	tag := ""
 	if s.required {
@@ -504,7 +512,7 @@ func (m model) viewConfig() string {
 
 func (m model) viewActions() string {
 	var b strings.Builder
-	b.WriteString(header() + "\n")
+	b.WriteString(m.header() + "\n")
 	if m.err != "" {
 		b.WriteString(stBad.Render("  "+m.err) + "\n\n")
 	} else {
@@ -534,7 +542,7 @@ func (m model) viewActions() string {
 
 func (m model) viewDone() string {
 	var b strings.Builder
-	b.WriteString(header() + "\n")
+	b.WriteString(m.header() + "\n")
 	b.WriteString(stOK.Render("  ✓ Setup complete.") + "\n\n")
 	for _, a := range m.acts {
 		switch a.status {

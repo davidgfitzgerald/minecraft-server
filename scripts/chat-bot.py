@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Goblin Bot — the Discord → Minecraft half of two-way chat.
+Chat bot — the Discord → Minecraft half of two-way chat.
 
 It connects to the Discord Gateway (a realtime WebSocket, managed by discord.py:
 IDENTIFY → heartbeat → DISPATCH, with automatic resume/reconnect) and listens for
@@ -31,7 +31,7 @@ Avoiding an infinite chat loop (the whole reason this is careful)
   into Discord, and nothing the pack produces can feed back into the game. No loop.
 ──────────────────────────────────────────────────────────────────────────────
 
-Reads from the gitignored .env: GOBLIN_BOT_TOKEN, IN_GAME_CHAT_CHANNEL_ID.
+Reads from the gitignored .env: CHAT_BOT_TOKEN, IN_GAME_CHAT_CHANNEL_ID.
 """
 import json
 import os
@@ -77,19 +77,19 @@ def inject_to_minecraft(author: str, content: str) -> bool:
         )
         return True
     except Exception as e:  # container down / send-command failed / timeout
-        print(f"goblin-bot: inject failed: {e}", flush=True)
+        print(f"chat-bot: inject failed: {e}", flush=True)
         return False
 
 
 def main() -> None:
     env = load_env()
-    token = env.get("GOBLIN_BOT_TOKEN", "").strip()
+    token = env.get("CHAT_BOT_TOKEN", "").strip()
     try:
         channel_id = int(env.get("IN_GAME_CHAT_CHANNEL_ID", "0") or "0")
     except ValueError:
         channel_id = 0
     if not token or not channel_id:
-        print("goblin-bot: set GOBLIN_BOT_TOKEN and IN_GAME_CHAT_CHANNEL_ID in .env", flush=True)
+        print("chat-bot: set CHAT_BOT_TOKEN and IN_GAME_CHAT_CHANNEL_ID in .env", flush=True)
         sys.exit(1)
 
     intents = discord.Intents.default()
@@ -99,7 +99,7 @@ def main() -> None:
 
     @client.event
     async def on_ready():
-        print(f"goblin-bot: connected as {client.user} — relaying channel {channel_id} → Minecraft", flush=True)
+        print(f"chat-bot: connected as {client.user} — relaying channel {channel_id} → Minecraft", flush=True)
 
     @client.event
     async def on_message(message: discord.Message):
@@ -122,7 +122,7 @@ def main() -> None:
 
         author = message.author.display_name
         ok = inject_to_minecraft(author, content)
-        print(f"goblin-bot: {'→ injected' if ok else '✗ dropped'}: {author}: {content}", flush=True)
+        print(f"chat-bot: {'→ injected' if ok else '✗ dropped'}: {author}: {content}", flush=True)
 
     # discord.py owns the Gateway WebSocket: connect, heartbeat, resume, reconnect.
     client.run(token, log_handler=None)

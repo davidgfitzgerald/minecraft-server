@@ -72,7 +72,7 @@ down MSG="":
       printf "💬 Discord message for #server-status to announce the server is going down (Enter for default): "
       read -r MSG
     fi
-    [ -z "$MSG" ] && MSG="Server going down — back soon. 🐐"
+    [ -z "$MSG" ] && MSG="Server going down — back soon."
     MSG="🛠️ ${MSG}"   # always flag #server-status DOWN announcements with the maintenance emoji
     echo "→ announcing to #server-status ..."
     ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,wrench,construction" ) || true
@@ -194,7 +194,7 @@ say-raw +MSG:
 chattest +MSG:
     #!/usr/bin/env bash
     set -uo pipefail
-    docker exec bedrock send-command "scriptevent goblin:chattest {{MSG}}" >/dev/null 2>&1 \
+    docker exec bedrock send-command "scriptevent chatbridge:chattest {{MSG}}" >/dev/null 2>&1 \
       && echo "→ fired test chat: '{{MSG}}' — check #in-game-chat in a second or two" \
       || { echo "❌ server not reachable — is it up? (just status)"; exit 1; }
 
@@ -263,33 +263,33 @@ notify-running:
     @echo "checking notify agent ..."
     @./scripts/notify-agent.sh status
 
-# ───────────── Goblin Bot: Discord #in-game-chat → Minecraft in-game chat ─────────────
-# Needs GOBLIN_BOT_TOKEN + IN_GAME_CHAT_CHANNEL_ID in .env. First use auto-creates an
+# ───────────── Chat bot: Discord #in-game-chat → Minecraft in-game chat ─────────────
+# Needs CHAT_BOT_TOKEN + IN_GAME_CHAT_CHANNEL_ID in .env. First use auto-creates an
 # isolated venv and installs discord.py. The reverse direction (game → Discord) is the
 # chat-bridge pack, not this bot.
 
 # run the bot in the FOREGROUND to test it live (Ctrl-C to stop)
 bot-run:
-    @./scripts/goblin-bot-agent.sh run
+    @./scripts/chat-bot-agent.sh run
 
 # install the bot as a permanent background agent (starts at login, auto-restarts)
 bot-install:
-    @echo "installing goblin-bot agent ..."
-    @./scripts/goblin-bot-agent.sh install
+    @echo "installing chat-bot agent ..."
+    @./scripts/chat-bot-agent.sh install
 
 # stop & remove the permanent background bot
 bot-uninstall:
-    @echo "removing goblin-bot agent ..."
-    @./scripts/goblin-bot-agent.sh uninstall
+    @echo "removing chat-bot agent ..."
+    @./scripts/chat-bot-agent.sh uninstall
 
 # is the permanent background bot running?
 bot-running:
-    @echo "checking goblin-bot agent ..."
-    @./scripts/goblin-bot-agent.sh status
+    @echo "checking chat-bot agent ..."
+    @./scripts/chat-bot-agent.sh status
 
 # tail the bot's log (shows each Discord→Minecraft relay)
 bot-logs:
-    @tail -n 40 -f bedrock-data/logs/goblin-bot-agent.log
+    @tail -n 40 -f bedrock-data/logs/chat-bot-agent.log
 
 # ───────────────────────── backup / restore ─────────────────────────
 
@@ -318,7 +318,7 @@ backup:
     echo "✅ backup: $BK  ($SIZE, $DBCOUNT db files)"
     # → announce to #backups (Discord). Non-fatal: a webhook hiccup must never fail the backup.
     if [ -n "${DISCORD_WEBHOOK_BACKUP:-}" ]; then
-      MSG="🗄️ A fresh world-snapshot has been pressed into stone — \`$(basename "$BK")\` · ${SIZE} · ${DBCOUNT} db files. Should the goblins meet ruin, this is the realm they wake to. 🐐"
+      MSG="🗄️ World snapshot saved — \`$(basename "$BK")\` · ${SIZE} · ${DBCOUNT} db files."
       safe=$(printf '%s' "$MSG" | sed 's/"/\\"/g')
       curl -fsS -H "Content-Type: application/json" \
         -d "{\"content\":\"${safe}\"}" "$DISCORD_WEBHOOK_BACKUP" >/dev/null 2>&1 \
@@ -389,7 +389,7 @@ backup-clean:
     echo "✅ deleted $DELETED backup(s); $REMAIN remain."
     # → announce to #backups (Discord). Non-fatal: a webhook hiccup must never fail the cleanup.
     if [ -n "${DISCORD_WEBHOOK_BACKUP:-}" ]; then
-      MSG="🧹 Backup cleanup: swept away ${DELETED} of the realm's oldest snapshot(s) — ${REMAIN} still stand watch in the vault. 🐐"
+      MSG="🧹 Backup cleanup: removed ${DELETED} old snapshot(s) — ${REMAIN} kept."
       safe=$(printf '%s' "$MSG" | sed 's/"/\\"/g')
       curl -fsS -H "Content-Type: application/json" \
         -d "{\"content\":\"${safe}\"}" "$DISCORD_WEBHOOK_BACKUP" >/dev/null 2>&1 \
@@ -480,7 +480,7 @@ _on-start MSG="" FORCE="":
       printf "💬 Discord message for #server-status to announce the server is back (Enter for default): "
       read -r MSG
     fi
-    [ -z "$MSG" ] && MSG="Server is back up. Reconnect and have fun! 🐐"
+    [ -z "$MSG" ] && MSG="Server is back up. Reconnect and have fun!"
     MSG="🟢 ${MSG}"   # always flag #server-status UP announcements as "server back online"
     echo "→ announcing return-to-service to #server-status ..."
     ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,white_check_mark" ) || true

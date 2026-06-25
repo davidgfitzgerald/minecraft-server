@@ -1,4 +1,4 @@
-# 🐐 Self-Hosted Minecraft Bedrock Server
+# Self-Hosted Minecraft Bedrock Server
 
 A self-hosted **Bedrock Dedicated Server** in Docker, exposed to the internet through a
 **playit.gg** tunnel (no port-forwarding, works for consoles), wrapped in a batteries-included
@@ -74,7 +74,7 @@ Two homes, by design (see *why* below):
 |---|---|---|
 | `com.mcserver.notify` | `just notify-*` | join/leave → phone push (+ opt-in desktop alert) |
 | `com.mcserver.uptime` | `just uptime-*` | daily uptime graph → `#monitoring` |
-| `com.mcserver.goblinbot` | `just bot-*` | Discord `#in-game-chat` → in-game chat |
+| `com.mcserver.chatbot` | `just bot-*` | Discord `#in-game-chat` → in-game chat |
 
 **Why some things run on the host (not in containers):**
 - **macOS desktop notifications** can't be sent from a Linux container — that's a host-only API.
@@ -183,12 +183,12 @@ just uptime-install       # schedule the daily 00:05 post (launchd)
 - **In-game → Discord:** a Bedrock **behavior pack** (`bedrock-data/behavior_packs/chat-bridge`)
   posts chat to `#in-game-chat` via `DISCORD_WEBHOOK_CHAT`. *(Advanced: needs the world's "Beta APIs"
   experiment enabled + the pack added to the world — already configured on the bundled world.)*
-- **Discord → in-game:** the **goblin bot** (`com.mcserver.goblinbot`) listens on the Discord Gateway
+- **Discord → in-game:** the **chat bot** (`com.mcserver.chatbot`) listens on the Discord Gateway
   and injects messages with `tellraw`. Loop-safe: it only relays **human** messages from the one
   channel (ignores bots/webhooks), and `tellraw` never re-triggers the outbound relay.
 
   ```bash
-  # .env: GOBLIN_BOT_TOKEN + IN_GAME_CHAT_CHANNEL_ID  (bot needs MESSAGE CONTENT INTENT)
+  # .env: CHAT_BOT_TOKEN + IN_GAME_CHAT_CHANNEL_ID  (bot needs MESSAGE CONTENT INTENT)
   just bot-run         # foreground test
   just bot-install     # permanent agent     just bot-logs / bot-running / bot-uninstall
   ```
