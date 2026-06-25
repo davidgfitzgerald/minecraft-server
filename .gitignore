@@ -18,3 +18,5 @@ wetransfer_*/
 
 # Goblin Bot Python venv (discord.py) — local, never commit
 scripts/.botvenv/
+
+tools/setup/setup

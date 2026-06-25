@@ -1,337 +1,247 @@
-# Self-Hosted Minecraft Bedrock Server
+# 🐐 Self-Hosted Minecraft Bedrock Server
 
-Runs a Bedrock Dedicated Server **and** a playit.gg tunnel in Docker, so friends can
-join from anywhere — including consoles — with no port forwarding.
+A self-hosted **Bedrock Dedicated Server** in Docker, exposed to the internet through a
+**playit.gg** tunnel (no port-forwarding, works for consoles), wrapped in a batteries-included
+operations layer:
 
----
+- 📲 **Notifications** — phone push (ntfy) on every join/leave; optional macOS desktop alerts
+- 📈 **Monitoring** — crash / tunnel-down / high-CPU-mem alerts, a daily digest, and a 4-panel **uptime graph**
+- 💬 **Two-way Discord chat** — in-game chat appears in `#in-game-chat`, and Discord messages appear in-game
+- 🗄️ **Backups** — consistent world snapshots with one command
+- 🛡️ **Safety guards** — nothing restarts/stops the server while a player is online
+- 🧙 **`just setup`** — an interactive wizard that gets a fresh clone running
 
-## 1. `docker-compose.yml`
-
-```yaml
-services:
-  bedrock:
-    image: itzg/minecraft-bedrock-server
-    container_name: bedrock
-    environment:
-      EULA: "TRUE"
-      SERVER_NAME: "hello-world"
-      GAMEMODE: "survival"
-      DIFFICULTY: "normal"
-      VERSION: "LATEST"          # tracks current Bedrock version so it matches auto-updated clients
-    ports:
-      - "19132:19132/udp"        # keeps direct LAN play / PS5 "LAN Games" discovery working
-    volumes:
-      - ./bedrock-data:/data     # world persists here, next to this file
-    networks:
-      mc:
-        ipv4_address: 172.20.0.10
-    stdin_open: true             # itzg image expects -i
-    tty: true                    # ...and -t, so you can attach to the console
-    restart: unless-stopped
-
-  playit:
-    image: ghcr.io/playit-cloud/playit-agent:0.17
-    container_name: playit
-    environment:
-      - SECRET_KEY=${PLAYIT_SECRET_KEY}
-    networks:
-      - mc
-    depends_on:
-      - bedrock
-    restart: unless-stopped
-
-networks:
-  mc:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/24
-```
+> Runs on an Apple-Silicon Mac (the x86 Bedrock server runs under box64). The server stack is
+> Docker; a few host-side helpers run as macOS launchd agents — see [Architecture](#architecture).
 
 ---
 
-## 2. Create a playit.gg agent
+## Quick start
 
-1. Sign up at https://playit.gg
-2. Setup wizard → choose **Docker** (shortcut: https://playit.gg/account/agents/new-docker)
-3. Give the agent any name
-4. Copy the generated key into a `.env` file next to the compose file:
+### Requirements
 
-   ```dotenv
-   PLAYIT_SECRET_KEY=some-long-series-of-characters
-   ```
-
-   > The key is shown only once. Add `.env` to `.gitignore` — the compose file is safe to commit, the key is not.
-
----
-
-## 3. Start it
-
-```bash
-docker compose up -d
-```
-
-Confirm the agent actually connected:
-
-```bash
-docker compose logs -f playit
-```
-
-You want `secret key valid` → `agent registered` → `tunnel running`.
-If you see `Error: InvalidSecret`, the key in `.env` is wrong — regenerate it (step 2).
-
-> Use `-d` (detached). If you run it in the foreground, the agent dies the moment you close the terminal.
-
----
-
-## 4. Create the tunnel
-
-The agent **must be running/online** for this (an offline agent shows a `?` and "tunnel type not supported").
-
-1. Go to https://playit.gg/account/tunnels → **New Tunnel**
-2. Name: anything
-3. Tunnel Type: **Minecraft Bedrock**
-4. Public Endpoint: **Free Network**
-5. Assign to Agent: your agent → **Next**
-6. Open the tunnel → **Origin Configuration** tab → set:
-   - **Local Address:** `172.20.0.10`
-   - **Local Port:** `19132`
-
-   > Critical: it defaults to `127.0.0.1`, which points the agent at *itself*. The server is a
-   > separate container at `172.20.0.10` (the static IP pinned in the compose file).
-
-7. Grab the tunnel's public address, e.g. **`<random>.ply.gg:12345`** (or an `IP:port`)
-   (the part before `:` is the host, the number after is the port — yours will differ).
-
----
-
-## 5. Connect
-
-> The address/port below are **made-up examples** — get your real playit tunnel host + port
-> with `just tunnel`. The DNS IPs are public BedrockConnect / Google DNS.
-
-### Connect on PC (Minecraft for Windows — Bedrock)
-
-1. Open Minecraft for Windows (the Bedrock version) and click **Play**.
-2. Select the **Servers** tab at the top.
-3. Scroll to the bottom of the server list and click **Add Server**.
-4. Fill in:
-   - **Server Name:** anything (e.g. "My World")
-   - **Server Address:** `203.0.113.42`
-   - **Port:** `52345`
-5. Click **Save** (or **Play** to jump straight in).
-6. The server now appears in your Servers list — click it, then **Join Server**.
-
-### Connect on PS5 (via BedrockConnect)
-
-Consoles have no "Add Server" button, so they use **BedrockConnect** (a DNS redirect into the
-featured-server list).
-
-1. Boot the PS5, log in to your profile, and **close Minecraft** if it's open.
-2. **Settings** (cog) → **Network** → **Settings** → **Set Up Internet Connection**.
-3. On your Wi-Fi network choose **Options** → **Advanced Settings**.
-4. Set **DNS Settings** to **Manual**:
-   - **Primary DNS:** `45.55.68.52`
-   - **Secondary DNS:** `8.8.8.8`
-   - **Proxy Server:** Don't Use
-5. Launch **Minecraft** and sign in to your Microsoft account.
-6. Click **Play** → **Servers** tab → choose **The Hive** and click **Play**
-   *(if BedrockConnect doesn't appear, try another featured server).*
-7. When **BedrockConnect** loads → **Connect to a Server**.
-8. Fill in:
-   - **Server Address:** `203.0.113.42`
-   - **Server Port:** `52345`
-   - **Server Name:** anything (e.g. "My World")
-   - Check **Add to server list** ✅
-9. Scroll down and **connect**!
-
-> When you're done, set the PS5 DNS back to **Automatic** (otherwise featured servers stay
-> redirected). Xbox/Switch use the same flow with BedrockConnect DNS `104.238.130.180`.
-
----
-
-## Quick verification
-
-Phone on **mobile data** (Wi-Fi off) → Minecraft → Add Server → tunnel IP + port.
-If the phone connects, the full internet path works and the PS5 will too.
-
----
-
-## Day-to-day commands
-
-```bash
-docker compose up -d                                   # start
-docker compose down                                    # stop
-docker compose logs -f                                 # watch both containers
-docker compose down -v --remove-orphans && \
-  docker compose up -d --force-recreate                # full clean restart
-```
-
-The world lives in `./bedrock-data` (a bind mount) and **survives** `down -v`.
-To wipe the world too: `docker compose down && rm -rf ./bedrock-data`.
-
-## Player join/leave notifications (macOS + iPhone)
-
-Get a desktop banner **and** an iPhone push whenever a player connects/disconnects
-(e.g. `👋 Steve left — 0/10 online`). The watcher (`scripts/notify.sh`) tails
-`docker logs` on the **host** and runs permanently as a launchd LaunchAgent. The recipes
-are in the `Justfile` (`just notify*`), but the steps below are the **manual/external**
-parts that must be redone on a fresh machine.
-
-### One-time setup
-
-1. **Install `terminal-notifier`** (host dependency — plain `osascript` notifications post
-   as "Script Editor" and macOS 15 *Sequoia* silently suppresses them):
-
-   ```bash
-   brew install terminal-notifier
-   ```
-
-   First run may need approval: **System Settings → Notifications → terminal-notifier →
-   Allow Notifications**. Also make sure no **Focus / Do Not Disturb** is active.
-
-2. **iPhone push via [ntfy.sh](https://ntfy.sh)** (optional — skip for Mac-only):
-   - Install the **ntfy** app (App Store — by *Philipp Heckel* / `binwiederhier`, bundle
-     `io.heckel.ntfy`; free, no account).
-   - In the app: **Subscribe to topic** → server `ntfy.sh` → enter a **private, random**
-     topic name (treat it like a password — anyone who knows it can read your pings),
-     e.g. `mc-<your-server>-<random>`.
-   - Add that exact topic to `.env`:
-
-     ```dotenv
-     NTFY_TOPIC=mc-yourserver-xxxxxxxxxx
-     ```
-
-     > ⚠️ Ensure `.env` **ends with a newline** before appending, or the new line glues onto
-     > the end of `PLAYIT_SECRET_KEY` and corrupts it. Verify with:
-     > `grep -c '^NTFY_TOPIC=' .env` (should print `1`).
-
-3. **Install the permanent watcher** (writes `~/Library/LaunchAgents/com.mcserver.notify.plist`,
-   starts at login, auto-restarts if it dies or the container recreates):
-
-   ```bash
-   just notify-install
-   ```
-
-### Commands
-
-```bash
-just notify-install     # set up + start the permanent background watcher (launchd)
-just notify-uninstall   # stop + remove it
-just notify-running     # is it alive? (pid / state)
-just notify            # run once in the foreground (ad-hoc; Ctrl-C to stop)
-just notify-test       # prove it works WITHOUT logging in (fires on the `list` line)
-```
-
-After editing `.env` or `scripts/notify.sh`, reload the running agent:
-
-```bash
-launchctl kickstart -k gui/$(id -u)/com.mcserver.notify
-```
-
-The agent logs to `bedrock-data/logs/notify-agent.log`; it prints `iPhone push: ON` there
-when `NTFY_TOPIC` is picked up.
-
-### Alerts & the event bus (crashes, tunnel, resources, Discord)
-
-`NTFY_TOPIC` doubles as a **pub/sub bus**: anything can publish, and any number of
-subscribers react. On top of join/leave this gives server-health alerts and a Discord feed.
-
-```
- PUBLISHERS ─POST─▶  ntfy.sh/<topic>  ─stream─▶  SUBSCRIBERS
- • host watcher        (the bus)                 • iPhone ntfy app (push)
-   joins / leaves                                • bridge container → Discord + prints
- • monitor container                             • any `curl .../json` listener
-   crash, tunnel-down, CPU/mem, daily digest
-```
-
-- The **monitor** container (`scripts/monitor.sh`) detects and publishes: **server down/up**
-  (container liveness — catches *any* stop/crash/OOM, not just the box64 one), the box64
-  `free(): invalid next size` **crash**, server **ready**, **tunnel-down** (silence of
-  playit's `tunnel running` heartbeat),
-  **high CPU/memory** (cooldown-limited; memory is an early warning for the heap crash),
-  and a **daily digest**. Thresholds via env: `MONITOR_CPU_ALERT` (%, default 300),
-  `MONITOR_MEM_ALERT` (MiB, default 1500), `MONITOR_ALERT_COOLDOWN` (s, default 600).
-- The **bridge** container (`scripts/bridge.sh`) subscribes to the bus, prints every event,
-  and forwards to Discord if `DISCORD_WEBHOOK_URL` is set.
-
-Start the whole observability stack (both containers, opt-in `monitor` profile):
-
-```bash
-just monitor-up      # start monitor + bridge
-just bridge-logs     # watch events flow through the bus
-just monitor-down    # stop them
-just digest-now      # publish a digest on demand (peak players, joins/leaves, crashes) → #monitoring
-```
-
-**Uptime graph (4-panel PNG → #monitoring).** A richer, visual daily digest in **UK time**
-(`scripts/uptime_graph.py` + `scripts/uptime.sh`, host-only — needs `python3` + `matplotlib`).
-Panels: an up/down **status strip**, **players online**, **CPU %**, **memory**. Crucially the
-status strip is driven by the **healthchecks.io flip history** (the same source as
-`#server-status`), so it reflects *player-reachability* (host online + tunnel up), not merely
-"is the container running" — and data gaps are left blank (no fake interpolation) while
-unreachable periods are shaded red. Needs `HEALTHCHECK_URL`, `HEALTHCHECK_API_KEY`, and
-`DISCORD_WEBHOOK_MONITOR` in `.env`.
-
-```bash
-just uptime                  # post the last 24h now → #monitoring
-just uptime yesterday        # a specific window: yesterday | today | 12h | 2026-06-23
-just uptime-preview          # render locally + print summary, WITHOUT posting
-just uptime-install          # schedule the daily post (previous UK day) at 00:05 → #monitoring
-just uptime-running          # is the daily post scheduled?  (uptime-uninstall to remove)
-```
-
-
-**Discord (optional, manual) — routed to per-category channels:** every event carries a
-category tag (`player` / `alert` / `monitor`) and the bridge posts it to the matching
-channel's webhook. In Discord, create channels (e.g. `#player-activity`, `#server-status`,
-`#monitoring`); for each, *Edit Channel → Integrations → Webhooks → New Webhook → Copy URL*.
-Put them in `.env`:
-
-```dotenv
-DISCORD_WEBHOOK_PLAYER=https://discord.com/api/webhooks/XXXX/YYYY    # joins/leaves
-DISCORD_WEBHOOK_SERVER_STATUS=https://discord.com/api/webhooks/XXXX/YYYY     # crash/tunnel/resource
-DISCORD_WEBHOOK_MONITOR=https://discord.com/api/webhooks/XXXX/YYYY   # daily digest
-# DISCORD_WEBHOOK_URL=...   # optional single catch-all; used for any category left unset
-```
-
-Reload the bridge to pick them up (monitor-only, never touches bedrock):
-`docker compose --profile monitor up -d --no-deps bridge`. Routing categories:
-
-| Category | Events | Channel |
+| Tool | Needed for | Install |
 |---|---|---|
-| `player`  | joins / leaves (+ online count) | `#player-activity` |
-| `alert`   | crash, server-up, tunnel down/up, high CPU/mem + cleared | `#server-status` |
-| `monitor` | daily digest | `#monitoring` |
+| **Docker** (+ daemon running) | the server stack | [OrbStack](https://orbstack.dev) or [Docker Desktop](https://docker.com/products/docker-desktop) |
+| **just** | the task runner | `brew install just` |
+| **Go** | the `just setup` wizard only | `brew install go` (or [go.dev/dl](https://go.dev/dl/)) |
+| **python3** | chat bot + uptime graph (optional features) | `brew install python3` |
+| **terminal-notifier** | macOS desktop alerts (opt-in only) | `brew install terminal-notifier` |
 
-## Safety guards (don't disconnect players)
-
-Two layers stop the server being restarted/stopped while someone's playing:
-
-1. **Interactive guard** — `scripts/guard.sh` runs before the disruptive recipes
-   (`just down` / `restart` / `recreate` / `up`). If players are online it prints who,
-   and you must **type the exact player count** to proceed (no reflexive "y"). With nobody
-   online it's a simple y/N. Bypass for automation: `FORCE=1 just down`. Fails closed if
-   there's no terminal to confirm on.
-
-2. **Claude Code hook** — `.claude/hooks/claude-guard-hook.sh`, registered as a `PreToolUse`
-   hook on `Bash` in `.claude/settings.json`. It intercepts *Claude's own* commands: any
-   `docker compose down` / `… stop|restart|rm bedrock|playit` / `--force-recreate` /
-   `just down|restart|recreate|up` triggers an **approval prompt to you** (naming any online
-   players) — for every such command, whether or not players are online. Nothing disruptive
-   runs without your explicit OK. (It deliberately over-matches on those phrases — erring safe.)
-
-Read-only commands (`logs`, `ps`, `just players`, `just status`) and monitor/bridge-only ops
-are never gated.
-
-# Fun Commands
-
-Once the server is running, you can attach to the console:
+### Set it up
 
 ```bash
-docker exec bedrock send-command "gamerule showcoordinates true"
+git clone <this-repo> && cd minecraft-server
+just setup
 ```
 
+`just setup` launches an **interactive, idempotent wizard** that:
+
+1. Checks your machine for the tools above and prints install hints for anything missing.
+2. Walks you through `.env` one prompt at a time (pre-filled from any existing `.env` — accept to keep, or edit). Only **playit's secret key** is required; everything else is optional and skippable.
+3. Writes `.env` (creating it from `.env.example` on a fresh clone, or merging in place without clobbering existing values/comments).
+4. Offers to start the stack and install the background agents — each step is safe to re-run, and anything already done is marked as such.
+
+Re-run `just setup` any time; it never breaks what's already configured or running.
+
+> Don't want the wizard? `cp .env.example .env`, fill it in, and run `docker compose up -d`.
+> See [Manual setup](#manual-setup-no-wizard).
+
+### Get the public address
+
 ```bash
-docker exec bedrock send-command "execute as @a at @s run setblock ~ ~5 ~ minecraft:diamond_block"
+just tunnel        # prints your playit address, e.g. <random>.ply.gg:12345
 ```
+
+Give that host + port to your friends. See [Connecting](#connecting).
+
+---
+
+## Architecture
+
+Two homes, by design (see *why* below):
+
+### 🐳 Docker containers (`docker compose up -d` starts all four)
+| Service | Image | Job |
+|---|---|---|
+| **bedrock** | itzg/minecraft-bedrock-server | the game server |
+| **playit** | playit-agent | outbound tunnel → public address |
+| **monitor** | docker:cli | reads logs/stats, fires health alerts, writes CSVs (mounts the docker socket **read-only**) |
+| **bridge** | curlimages/curl | subscribes to the ntfy bus, fans events out to Discord webhooks |
+
+### 🖥️ Host launchd agents (macOS, start at login, auto-restart)
+| Agent | Manage with | Job |
+|---|---|---|
+| `com.mcserver.notify` | `just notify-*` | join/leave → phone push (+ opt-in desktop alert) |
+| `com.mcserver.uptime` | `just uptime-*` | daily uptime graph → `#monitoring` |
+| `com.mcserver.goblinbot` | `just bot-*` | Discord `#in-game-chat` → in-game chat |
+
+**Why some things run on the host (not in containers):**
+- **macOS desktop notifications** can't be sent from a Linux container — that's a host-only API.
+- The **chat bot** drives `docker exec … send-command` (read-**write** daemon control). A writable
+  docker socket inside a container is root-equivalent on the host; running the controller *outside*
+  what it controls is safer and avoids a lifecycle paradox.
+- Host agents keep **observing/announcing even while the stack is down or being recreated**.
+
+(The `monitor` container is the exception that proves the rule: it only *reads* the daemon, so it
+mounts the socket **read-only** and is safely containerized.)
+
+---
+
+## Connecting
+
+> Addresses below are **examples** — get yours with `just tunnel`.
+
+### PC (Minecraft for Windows — Bedrock)
+**Play → Servers tab → Add Server** → name it, enter the tunnel **host** + **port** → **Save** → **Join**.
+
+### PS5 / Xbox / Switch (via BedrockConnect)
+Consoles have no "Add Server", so they use a DNS redirect into the featured-server list:
+
+1. Console network settings → set **DNS to Manual**:
+   - **Primary:** `45.55.68.52` (Xbox/Switch can use `104.238.130.180`)
+   - **Secondary:** `8.8.8.8`
+2. Launch Minecraft → **Play → Servers** → open any **featured server** → **BedrockConnect** loads.
+3. **Connect to a Server** → enter your tunnel **host** + **port** → check **Add to server list** → connect.
+4. When done, set console DNS back to **Automatic**.
+
+**Quick check:** phone on **mobile data** (Wi-Fi off) → Add Server → tunnel host+port. If the phone
+connects, the full internet path works and consoles will too.
+
+---
+
+## Everyday commands
+
+```bash
+just                 # list every recipe
+just up              # start (guarded; announces return to #server-status with 🟢)
+just down "reason"   # stop (guarded; kicks players cleanly first; announces 🛠️)
+just restart         # bounce bedrock only (keeps logs)
+just status          # container status        just players   # who's online
+just tunnel          # public address          just logs      # follow all logs
+just backup          # consistent world snapshot
+```
+
+Timestamps everywhere are **UK time** (`TZ=Europe/London`), matching Discord and the graphs.
+`just up`/`down`/`restart` prompt for a `#server-status` message (Enter for a default); the
+announcement is prefixed 🟢 (up) or 🛠️ (down).
+
+---
+
+## Features
+
+### 📲 Notifications (phone + opt-in desktop)
+
+`scripts/notify.sh` (the `notify` agent) tails the server log and announces joins/leaves. The two
+output channels are **independent**:
+
+- **Phone push via [ntfy.sh](https://ntfy.sh)** — the default. On whenever `NTFY_TOPIC` is set.
+- **macOS desktop alert** — **opt-in, off by default.** Enable with `NOTIFY_MACOS=1` in `.env`
+  (uses `terminal-notifier`).
+
+```bash
+just notify-install / notify-uninstall / notify-running    # manage the permanent agent
+just notify-test          # prove the pipeline without logging in
+```
+
+`NTFY_TOPIC` doubles as a **pub/sub bus**: publishers POST events, and subscribers (your phone's
+ntfy app, the `bridge` container → Discord) react.
+
+### 📈 Monitoring, alerts & Discord routing
+
+The **monitor** container detects and publishes: **server down/up**, the box64
+**heap-corruption crash** family (`invalid next size` / `corrupted size vs` / `double free`),
+**tunnel-down** (playit heartbeat silence), **high CPU/memory**, and a **daily digest**. Thresholds
+via `.env` (`MONITOR_CPU_ALERT` %, `MONITOR_MEM_ALERT` MiB, `MONITOR_ALERT_COOLDOWN` s).
+
+The **bridge** routes each event to a per-channel Discord webhook by category:
+
+| Category | Events | Webhook (`.env`) → channel |
+|---|---|---|
+| `player` | joins / leaves | `DISCORD_WEBHOOK_PLAYER` → `#player-activity` |
+| `alert` | crash, up/down, tunnel, CPU/mem | `DISCORD_WEBHOOK_SERVER_STATUS` → `#server-status` |
+| `monitor` | daily digest, uptime graph | `DISCORD_WEBHOOK_MONITOR` → `#monitoring` |
+| `chat` | in-game chat relay | `DISCORD_WEBHOOK_CHAT` → `#in-game-chat` |
+
+Any category left unset falls back to `DISCORD_WEBHOOK_URL`. Reload the bridge after editing webhooks
+(never touches bedrock): `docker compose up -d --no-deps bridge`.
+
+### 📊 Uptime graph
+
+A 4-panel daily PNG (status strip · players · CPU · memory) in UK time → `#monitoring`. The status
+strip is driven by **healthchecks.io flip history** (so it reflects real player-reachability, not just
+"is the container up"). Needs `HEALTHCHECK_URL`, `HEALTHCHECK_API_KEY`, `DISCORD_WEBHOOK_MONITOR`.
+
+```bash
+just uptime               # post the last 24h now
+just uptime-preview       # render locally WITHOUT posting
+just uptime-install       # schedule the daily 00:05 post (launchd)
+```
+
+### 💬 Two-way Discord ↔ in-game chat
+
+- **In-game → Discord:** a Bedrock **behavior pack** (`bedrock-data/behavior_packs/chat-bridge`)
+  posts chat to `#in-game-chat` via `DISCORD_WEBHOOK_CHAT`. *(Advanced: needs the world's "Beta APIs"
+  experiment enabled + the pack added to the world — already configured on the bundled world.)*
+- **Discord → in-game:** the **goblin bot** (`com.mcserver.goblinbot`) listens on the Discord Gateway
+  and injects messages with `tellraw`. Loop-safe: it only relays **human** messages from the one
+  channel (ignores bots/webhooks), and `tellraw` never re-triggers the outbound relay.
+
+  ```bash
+  # .env: GOBLIN_BOT_TOKEN + IN_GAME_CHAT_CHANNEL_ID  (bot needs MESSAGE CONTENT INTENT)
+  just bot-run         # foreground test
+  just bot-install     # permanent agent     just bot-logs / bot-running / bot-uninstall
+  ```
+
+- **From the console:**
+  ```bash
+  just say  "dinner in 10"                       # broadcast to everyone (also → #in-game-chat)
+  just say-raw "§6§lHeads up!§r §7dinner in 10"  # styled broadcast (§ colour codes)
+  just tell ciaranosaurus "your base is on fire" # private whisper (not relayed)
+  ```
+
+### 🗄️ Backups
+
+```bash
+just backup            # flush + consistent snapshot (no player disconnect) → #backups
+just backups           # list            just restore <name>    # restore one
+just backup-clean      # prune oldest, always keep the 3 newest
+```
+
+### 🛡️ Safety guards
+
+1. **Interactive guard** (`scripts/guard.sh`) runs before `up`/`down`/`restart`/`recreate`. If players
+   are online it lists them and makes you type the exact count to proceed. Bypass for automation: `FORCE=1`.
+2. **Claude Code hook** (`.claude/`) intercepts Claude's own disruptive commands and prompts you first.
+
+Read-only commands and monitor/bridge-only ops are never gated.
+
+---
+
+## Manual setup (no wizard)
+
+1. `cp .env.example .env` and fill it in (only `PLAYIT_SECRET_KEY` is required). Get a playit key:
+   sign up at [playit.gg](https://playit.gg) → New agent (Docker) → copy the secret (shown once).
+2. `docker compose up -d` — then confirm the tunnel: `docker compose logs -f playit` (want
+   `secret key valid` → `agent registered` → `tunnel running`).
+3. Create the tunnel at [playit.gg/account/tunnels](https://playit.gg/account/tunnels) → New Tunnel →
+   **Minecraft Bedrock** → Free Network → assign your agent → **Origin: Local Address `172.20.0.10`,
+   Port `19132`** (it defaults to `127.0.0.1`, which is wrong — the server is a separate container).
+4. Optional features: set the relevant `.env` vars and install the agents (`just notify-install`,
+   `just uptime-install`, `just bot-install`).
+
+The world persists in `./bedrock-data` (a bind mount) and survives `docker compose down`.
+To wipe it: `docker compose down && rm -rf ./bedrock-data`.
+
+---
+
+## Fun commands
+
+```bash
+just cmd "gamerule showcoordinates true"
+just cmd "execute as @a at @s run setblock ~ ~5 ~ minecraft:diamond_block"
+```
+
+> **Note on crashes:** the box64 heap-corruption crashes (`free(): invalid next size`, etc.) are an
+> emulation artifact of running x86 Bedrock on Apple Silicon. Restarts clear them; the real cure is
+> native x86 hosting. The monitor detects and reports them.

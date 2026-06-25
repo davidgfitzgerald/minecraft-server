@@ -16,6 +16,28 @@ maint_flag := "bedrock-data/.maintenance"
 default:
     @just --list
 
+# ───────────────────────── first-run setup ─────────────────────────
+
+# interactive, idempotent setup wizard — guides you through .env and starting the
+# services. Safe to re-run: it keeps whatever is already configured/running.
+setup: _require-go
+    @cd "{{justfile_directory()}}/tools/setup" && MC_ROOT="{{justfile_directory()}}" go run .
+
+# preflight: the wizard is a small Go/Bubbletea TUI, so it needs Go. If Go is missing,
+# print an OS-aware install hint and stop (just has no built-in `require`, so we do it here).
+_require-go:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    command -v go >/dev/null 2>&1 && exit 0
+    echo "❌ 'just setup' needs Go (the wizard is a small Bubbletea TUI) — not installed."
+    case "$(uname -s)" in
+      Darwin) echo "   → Install:  brew install go        (or download: https://go.dev/dl/)" ;;
+      Linux)  echo "   → Install:  https://go.dev/dl/      (or e.g. sudo apt install golang)" ;;
+      *)      echo "   → Install Go: https://go.dev/dl/" ;;
+    esac
+    echo "   Then re-run:  just setup"
+    exit 1
+
 # ───────────────────────── server lifecycle ─────────────────────────
 
 # start the stack (server + tunnel) — guarded: blocks if a player is online (config changes can recreate).
