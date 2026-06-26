@@ -12,6 +12,14 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ## Unreleased
 
+### Added
+
+- **Online-player overlay on the map.** Live `just map` / `!map` / `/map` renders now
+  overlay a marker + **gamertag** + live coordinates for every player currently online
+  (positions queried from the running server via `online_players.py`). Offline players
+  are omitted — the world DB stores no gamertags, so a saved position can't be named.
+  Rendering a backup db skips the overlay.
+
 ### Changed
 
 - **Crash alert** now flags when a crash lands **during a LevelDB AutoCompaction

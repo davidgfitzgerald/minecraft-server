@@ -557,10 +557,11 @@ _amulet SCRIPT:
       -v "$PWD/scripts":/scripts:ro \
       mc-tools python /scripts/$(basename {{SCRIPT}})
 
-# render a top-down terrain map of the overworld → world-map.png.
-# DB defaults to the live world (snapshotted to scratch first, never read in place);
-# pass a backup's db for a guaranteed-consistent render, e.g.
-#   just map "bedrock-data/backups/<name>/db"
+# render a top-down terrain map of the overworld → world-map.png. Live renders also
+# overlay ONLINE players (gamertag + live position); offline players are omitted (the
+# world DB stores no gamertags). DB defaults to the live world (snapshotted to scratch
+# first, never read in place); pass a backup's db for a guaranteed-consistent, player-less
+# render, e.g.  just map "bedrock-data/backups/<name>/db"
 map DB="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -585,8 +586,15 @@ map DB="":
       "$p" -c 'import matplotlib, numpy' >/dev/null 2>&1 && { PYBIN="$p"; break; }
     done
     [ -n "$PYBIN" ] || { echo "no python3 with matplotlib+numpy found (pip install matplotlib numpy)"; exit 1; }
-    "$PYBIN" scripts/render_map.py bedrock-data/_maptmp/heightmap.bin world-map.png
-    echo "✅ wrote world-map.png (rendered with $PYBIN)"
+    # overlay ONLINE players (real gamertag + live position from the running server) on LIVE
+    # renders only — a backup's historical terrain shouldn't get current player dots. Offline
+    # players are omitted (the world DB stores no gamertags). Best-effort: never fail the render.
+    PLAYERS=""
+    if [ -z "{{DB}}" ] && python3 scripts/online_players.py bedrock-data/_maptmp/players.json 2>/dev/null; then
+      [ -s bedrock-data/_maptmp/players.json ] && PLAYERS="bedrock-data/_maptmp/players.json"
+    fi
+    "$PYBIN" scripts/render_map.py bedrock-data/_maptmp/heightmap.bin world-map.png $PLAYERS
+    echo "✅ wrote world-map.png (rendered with $PYBIN${PLAYERS:+ · online players overlaid})"
 
 # internal: render the overworld map AND post it to #map. Shared by in-game/Discord !map.
 # Lock-guarded (renders are heavy) + rate-limited per requester. Arg = requester id, e.g.

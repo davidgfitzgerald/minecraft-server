@@ -260,6 +260,11 @@ extracts a surface heightmap, and renders a north-up, hill-shaded terrain PNG
 (`world-map.png`, gitignored — it's a render of the real world). `!map` / `/map`
 post it directly to `#map` via `DISCORD_WEBHOOK_MAP`.
 
+Live renders also **overlay online players** — a red marker + gamertag + live
+coordinates for everyone currently logged in (positions queried from the running
+server). Offline players are omitted: the world DB stores no gamertags, so there's
+no reliable way to name a saved position. (Rendering a backup db skips the overlay.)
+
 ```bash
 just map                                   # render the live world
 just map "bedrock-data/backups/<name>/db"  # render a specific backup (guaranteed-consistent)

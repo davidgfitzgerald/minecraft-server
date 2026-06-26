@@ -79,8 +79,9 @@ cp -a "bedrock-data/worlds/${LEVEL_NAME}" \
 | Script | Where | Purpose |
 |---|---|---|
 | `export_heightmap.py` | `mc-tools` container | reads the world db, writes a surface heightmap (`heightmap.bin`). |
-| `export_players.py` | `mc-tools` container | extracts each player's last-saved `Pos`/`DimensionId` → `players.json` (labels are **opaque short ids, not gamertags**). |
-| `render_map.py` | host (numpy + matplotlib) | stitches the heightmap into a north-up, hill-shaded PNG; optionally overlays player positions. |
+| `online_players.py` | host (needs docker) | queries the **running server** (`list` + `querytarget`) for online players' live positions, labelled with real **gamertags** → `players.json`. This is what live `just map` overlays. |
+| `export_players.py` | `mc-tools` container | alternative: extracts **every** player's last-saved `Pos`/`DimensionId` from the db → `players.json`, labelled with **opaque short ids** (the db stores no gamertags). Covers offline players but can't name them. |
+| `render_map.py` | host (numpy + matplotlib) | stitches the heightmap into a north-up, hill-shaded PNG; optionally overlays the player positions from a `players.json`. |
 
 The container scripts share `bedrock_nbt.py` (little-endian NBT + LevelDB
 helpers). The generated `world-map.png` is **gitignored** — it's a render of the
