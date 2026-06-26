@@ -10,6 +10,16 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **Crash alert** now flags when a crash lands **during a LevelDB AutoCompaction
+  pass** — a common trigger for the box64 heap faults. Makes compaction-correlated
+  crashes obvious at a glance (e.g. the idle 15:34 crash that prompted this).
+
+---
+
 ## 2026.06.26.1
 
 Justfile audit — trimmed the recipe list (55 → 52 public) and fixed a backup bug.
