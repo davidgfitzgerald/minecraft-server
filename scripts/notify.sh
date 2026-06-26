@@ -178,8 +178,9 @@ docker logs -f --tail 0 "$CONTAINER" 2>&1 | while IFS= read -r line; do
     *"Starting Server"*)
       # A stop/restart kills sessions WITHOUT logging "Player disconnected", so the
       # post-restart re-joins would otherwise look like impossible double-joins with no
-      # "left" between them. Announce the restart so the timeline reads correctly.
-      notify "🔄 server (re)started — players will reconnect" "Funk" "arrows_counterclockwise,gear" ;;
+      # "left" between them. Note it locally (for the log timeline) but DON'T push it —
+      # it reached Discord/phone on every (re)start and was just noise.
+      echo "→ server (re)started — players will reconnect (not pushed)" ;;
     *"Player connected:"*)
       # A connection ATTEMPT — the player has NOT entered the world yet, and may never
       # (a crash can hit between here and "Player Spawned"). Announce a tentative status;
