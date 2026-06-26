@@ -143,9 +143,14 @@ while true; do
   cr=0
   if [ "$rc_now" -gt "$last_restart" ]; then
     cr=$((rc_now - last_restart))
-    heap=$(docker logs --since "${INT}s" "$BED" 2>&1 | grep -ciE 'invalid next size|corrupted size vs|double free or corruption')
+    win=$(docker logs --since "${INT}s" "$BED" 2>&1)   # one read; used to name the cause + add context
+    heap=$(printf '%s\n' "$win" | grep -ciE 'invalid next size|corrupted size vs|double free or corruption')
     cause="process exited"; [ "${heap:-0}" -gt 0 ] && cause="box64 heap corruption"
-    publish_bus "💥 SERVER CRASH x${cr} (${cause}) — bedrock died and auto-restarted (restart #${rc_now}). If it keeps crash-looping it may need a manual restart; a 🔴 SERVER DOWN alert follows if it doesn't recover." urgent "alert,boom,skull"
+    # context: these box64 faults frequently land during a LevelDB AutoCompaction pass (an
+    # I/O-heavy world-db rewrite). Flag it so compaction-triggered crashes are obvious at a glance.
+    detail=""
+    printf '%s\n' "$win" | grep -q 'Running AutoCompaction' && detail=" during a LevelDB AutoCompaction pass"
+    publish_bus "💥 SERVER CRASH x${cr} (${cause})${detail} — bedrock died and auto-restarted (restart #${rc_now}). If it keeps crash-looping it may need a manual restart; a 🔴 SERVER DOWN alert follows if it doesn't recover." urgent "alert,boom,skull"
   fi
   last_restart=$rc_now    # re-baseline (also resyncs to 0 after a recreate)
   # recovery / ready
