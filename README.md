@@ -275,6 +275,10 @@ just map "bedrock-data/backups/<name>/db"  # render a specific backup (guarantee
 1. **Interactive guard** (`scripts/guard.sh`) runs before `up`/`down`/`restart`/`recreate`. If players
    are online it lists them and makes you type the exact count to proceed. Bypass for automation: `FORCE=1`.
 2. **Claude Code hook** (`.claude/`) intercepts Claude's own disruptive commands and prompts you first.
+3. **Optional shutdown countdown** — set `SHUTDOWN_COUNTDOWN=60` (seconds) in `.env` and
+   `down`/`restart`/`recreate` will warn online players in-game every 10s (60s, 50s, … 10s)
+   before stopping. Off by default; skipped when nobody's online. One-off:
+   `SHUTDOWN_COUNTDOWN=60 just restart "patch incoming"`.
 
 Read-only commands and monitor/bridge-only ops are never gated.
 

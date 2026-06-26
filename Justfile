@@ -76,6 +76,7 @@ down MSG="":
     MSG="🛠️ ${MSG}"   # always flag #server-status DOWN announcements with the maintenance emoji
     echo "→ announcing to #server-status ..."
     ( . scripts/notify-lib.sh; publish_bus "$MSG" default "alert,wrench,construction" ) || true
+    just _shutdown-countdown "going down" || true   # optional in-game countdown (SHUTDOWN_COUNTDOWN)
     # disconnect online players cleanly FIRST — while the watcher + bridge are still up —
     # so their "left" reaches #player-activity instead of leaving a phantom-online entry.
     ./scripts/graceful-kick.sh || true
@@ -95,6 +96,7 @@ down MSG="":
 # Always prompts for a #server-status message (Enter = default); pass one inline to skip: just restart "Quick bounce"
 restart MSG="":
     @./scripts/guard.sh "restart the bedrock server (just restart)"
+    @just _shutdown-countdown "restarting" || true   # optional in-game countdown (SHUTDOWN_COUNTDOWN)
     @echo "restarting bedrock server ..."
     docker compose restart bedrock
     @just _on-start "{{MSG}}" force    # always announce the return to Discord (prompts for a message)
@@ -103,6 +105,7 @@ restart MSG="":
 # recreate containers (guarded; needed after editing docker-compose.yml; archives logs first)
 recreate:
     @./scripts/guard.sh "recreate containers (just recreate)"
+    @just _shutdown-countdown "restarting" || true   # optional in-game countdown (SHUTDOWN_COUNTDOWN)
     @echo "recreating containers ..."
     @just _archive-logs
     docker compose up -d --force-recreate
@@ -134,6 +137,29 @@ _archive-logs:
         /bin/rm -f "$out"   # container didn't exist — drop the empty file
       fi
     done
+
+# internal: OPTIONAL pre-shutdown countdown. When SHUTDOWN_COUNTDOWN (seconds) is set
+# AND players are online, warn everyone in-game every 10s before a down/restart/recreate.
+# No-op when the var is unset/0 or nobody's online (so automation never waits for an empty
+# server). ARG = the verb shown to players ("going down" / "restarting"). Off by default.
+_shutdown-countdown REASON="going down":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    SECS="${SHUTDOWN_COUNTDOWN:-}"; case "$SECS" in ""|0|*[!0-9]*) exit 0;; esac
+    # who's online? skip the whole wait if the server's down or nobody's on.
+    docker exec bedrock send-command "list" >/dev/null 2>&1 || exit 0
+    sleep 0.5
+    online=$(docker logs --since 4s bedrock 2>&1 | grep -oE 'There are [0-9]+/[0-9]+ players online' | tail -1 | grep -oE '[0-9]+' | head -1)
+    [ "${online:-0}" -gt 0 ] || { echo "→ countdown: nobody online — skipping the wait."; exit 0; }
+    echo "→ ${SECS}s in-game countdown before {{REASON}} (${online} online)…"
+    t="$SECS"
+    while [ "$t" -gt 0 ]; do
+      docker exec bedrock send-command "tellraw @a {\"rawtext\":[{\"text\":\"§c§l⚠ Server {{REASON}} in ${t}s§r\"}]}" >/dev/null 2>&1 || true
+      if [ "$t" -le 10 ]; then step="$t"; else step=10; fi   # handles a non-multiple-of-10 SECS
+      sleep "$step"
+      t=$((t - step))
+    done
+    docker exec bedrock send-command 'tellraw @a {"rawtext":[{"text":"§c§lServer going down now — see you soon!§r"}]}' >/dev/null 2>&1 || true
 
 # list archived log snapshots (newest first)
 archived:

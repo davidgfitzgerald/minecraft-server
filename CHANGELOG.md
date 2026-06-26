@@ -14,6 +14,11 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ### Added
 
+- **Optional pre-shutdown countdown.** Set `SHUTDOWN_COUNTDOWN` (seconds) and
+  `down` / `restart` / `recreate` warn online players in-game every 10s
+  (60s, 50s, … 10s) before stopping. Off by default; skipped when nobody's
+  online (automation never waits for an empty server). Can be set inline for a
+  single shutdown.
 - **Online-player overlay on the map.** Live `just map` / `!map` / `/map` renders now
   overlay a marker + **gamertag** + live coordinates for every player currently online
   (positions queried from the running server via `online_players.py`). Offline players
