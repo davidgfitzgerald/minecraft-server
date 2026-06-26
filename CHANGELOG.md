@@ -10,7 +10,11 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ---
 
-## Unreleased
+## 2026.06.26.2
+
+The "graceful shutdown & live map" release: lifecycle commands can warn players
+before stopping, the map shows who's online, and crash alerts call out
+compaction-correlated faults.
 
 ### Added
 
@@ -18,7 +22,9 @@ number. The current version also lives in [`VERSION`](VERSION).
   `down` / `restart` / `recreate` warn online players in-game every 10s
   (60s, 50s, … 10s) before stopping. Off by default; skipped when nobody's
   online (automation never waits for an empty server). Can be set inline for a
-  single shutdown.
+  single shutdown. The operator sees the countdown tick down in the terminal,
+  and if every player leaves mid-countdown it stops waiting and shuts down at
+  once instead of stalling for the full duration.
 - **Online-player overlay on the map.** Live `just map` / `!map` / `/map` renders now
   overlay a marker + **gamertag** + live coordinates for every player currently online
   (positions queried from the running server via `online_players.py`). Offline players

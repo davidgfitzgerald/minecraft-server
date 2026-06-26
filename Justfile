@@ -146,19 +146,29 @@ _shutdown-countdown REASON="going down":
     #!/usr/bin/env bash
     set -uo pipefail
     SECS="${SHUTDOWN_COUNTDOWN:-}"; case "$SECS" in ""|0|*[!0-9]*) exit 0;; esac
-    # who's online? skip the whole wait if the server's down or nobody's on.
-    docker exec bedrock send-command "list" >/dev/null 2>&1 || exit 0
-    sleep 0.5
-    online=$(docker logs --since 4s bedrock 2>&1 | grep -oE 'There are [0-9]+/[0-9]+ players online' | tail -1 | grep -oE '[0-9]+' | head -1)
-    [ "${online:-0}" -gt 0 ] || { echo "→ countdown: nobody online — skipping the wait."; exit 0; }
+    # how many players are online right now? ("" if the server isn't responding)
+    count_online() {
+      docker exec bedrock send-command "list" >/dev/null 2>&1 || { echo ""; return; }
+      sleep 0.5
+      docker logs --since 4s bedrock 2>&1 \
+        | grep -oE 'There are [0-9]+/[0-9]+ players online' | tail -1 \
+        | grep -oE '[0-9]+' | head -1
+    }
+    online="$(count_online)"
+    [ "${online:-0}" -gt 0 ] 2>/dev/null || { echo "→ countdown: nobody online — skipping the wait."; exit 0; }
     echo "→ ${SECS}s in-game countdown before {{REASON}} (${online} online)…"
     t="$SECS"
     while [ "$t" -gt 0 ]; do
+      echo "   ⏳ ${t}s — warning ${online} player(s)…"
       docker exec bedrock send-command "tellraw @a {\"rawtext\":[{\"text\":\"§c§l⚠ Server {{REASON}} in ${t}s§r\"}]}" >/dev/null 2>&1 || true
       if [ "$t" -le 10 ]; then step="$t"; else step=10; fi   # handles a non-multiple-of-10 SECS
       sleep "$step"
       t=$((t - step))
+      # if everyone left in the meantime, stop waiting and go down now.
+      online="$(count_online)"
+      [ "${online:-0}" -gt 0 ] 2>/dev/null || { echo "   ✅ everyone left — shutting down now (no need to wait)."; exit 0; }
     done
+    echo "   ⏳ 0s — {{REASON}} now."
     docker exec bedrock send-command 'tellraw @a {"rawtext":[{"text":"§c§lServer going down now — see you soon!§r"}]}' >/dev/null 2>&1 || true
 
 # list archived log snapshots (newest first)
