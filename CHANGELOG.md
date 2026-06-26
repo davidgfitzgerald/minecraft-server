@@ -10,6 +10,38 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ---
 
+## 2026.06.26.1
+
+Justfile audit — trimmed the recipe list (55 → 52 public) and fixed a backup bug.
+
+### Removed
+
+- **`just backup-clean`** — superseded by the automatic rotation that runs after
+  every `just backup`. It also kept only the newest 3 and **ignored 🔒 saved
+  markers**, so it could delete a snapshot you'd explicitly saved. Use
+  `backup-save` / `backup-unsave` + auto-rotation instead.
+- **`just crashes`** — its since-boot crash count is already reported by
+  `just analyze` (and crash state by `doctor` / the monitor).
+- **`just blogs` / `just plogs` / `just bridge-logs`** — folded into one
+  parametrized recipe (below).
+
+### Changed
+
+- **`just logs [service]`** now follows all services by default, or a single one:
+  `just logs bedrock` · `just logs playit` · `just logs monitor` · `just logs bridge`.
+- **`just notify`** (foreground watcher) renamed to **`just notify-run`** for
+  symmetry with `bot-run`. The `notify-install` / `-uninstall` / `-running` agent
+  recipes are unchanged.
+- **`just clean`** no longer references a scratch dir (`_inspect_db`) that was
+  never created.
+
+### Added
+
+- **`just notify-logs`** and **`just uptime-logs`** — tail those agents' logs,
+  matching the existing `bot-logs`.
+
+---
+
 ## 2026.06.26
 
 The "commands & map" release: in-game and Discord now share a command surface,

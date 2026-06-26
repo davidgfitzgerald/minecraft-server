@@ -140,20 +140,9 @@ archived:
     @echo "checking archived logs ..."
     @ls -1t bedrock-data/logs/ 2>/dev/null || echo "no archives yet — created on next: just down / just recreate"
 
-# follow all logs
-logs:
-    @echo "checking all logs ..."
-    docker compose logs -f
-
-# follow server logs only
-blogs:
-    @echo "checking bedrock logs ..."
-    docker compose logs -f bedrock
-
-# follow tunnel logs only
-plogs:
-    @echo "checking playit logs ..."
-    docker compose logs -f playit
+# follow logs — all services by default, or one:  just logs bedrock|playit|monitor|bridge
+logs SVC="":
+    docker compose logs -f {{SVC}}
 
 # container status
 status:
@@ -222,15 +211,11 @@ tunnel:
     @echo "printing tunnel address ..."
     @docker compose logs playit 2>&1 | grep -oiE "[a-z0-9.-]+\.(ply\.gg|playit\.gg)(:[0-9]+)?" | tail -1 || echo "not found — try: just plogs"
 
-# crash check for this container-life
-crashes:
-    @echo "checking for crashes ..."
-    @echo "heap-corruption crashes since boot: $(docker logs bedrock 2>&1 | grep -ciE 'invalid next size|corrupted size vs|double free or corruption')"
-
 # ───────────────────────── notifications ────────────────────────────
 
-# macOS (+ optional iPhone via ntfy) notification on player join/leave — host, Ctrl-C to stop
-notify:
+# run the watcher in the FOREGROUND to test it live (Ctrl-C to stop) — host
+# macOS (+ optional iPhone via ntfy) notification on player join/leave
+notify-run:
     @echo "running notify ..."
     @./scripts/notify.sh
 
@@ -273,6 +258,10 @@ notify-uninstall:
 notify-running:
     @echo "checking notify agent ..."
     @./scripts/notify-agent.sh status
+
+# tail the notify agent's log
+notify-logs:
+    @tail -n 40 -f bedrock-data/logs/notify-agent.log
 
 # ───────────── Chat bot: Discord #in-game-chat → Minecraft in-game chat ─────────────
 # Needs CHAT_BOT_TOKEN + IN_GAME_CHAT_CHANNEL_ID in .env. First use auto-creates an
@@ -366,58 +355,6 @@ restore NAME:
     cp -a "$SRC" "$WORLD"
     docker compose start bedrock
     echo "✅ restored {{NAME}} (previous world kept alongside as *.pre-restore-*)"
-
-# interactively prune OLD backups (manual only). Lists all backups oldest→newest, lets you
-# delete up to 3 of the OLDEST per run, and NEVER the 3 newest. Posts a summary to #backups.
-backup-clean:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    DIR="bedrock-data/backups"
-    [ -d "$DIR" ] || { echo "no backups dir yet ($DIR) — run: just backup"; exit 0; }
-    # backups are named {{world}}_YYYYMMDD-HHMMSS, so a lexical sort = chronological (oldest→newest)
-    N=$(ls -1 "$DIR" 2>/dev/null | wc -l | tr -d ' '); N=${N:-0}
-    if [ "$N" -eq 0 ]; then echo "no backups found in $DIR"; exit 0; fi
-    # eligible this run = everything except the newest 3, capped at 3
-    MAX=$((N - 3)); [ "$MAX" -lt 0 ] && MAX=0; [ "$MAX" -gt 3 ] && MAX=3
-    echo "📦 $N backup(s) in $DIR (oldest → newest):"
-    i=0
-    while IFS= read -r name; do
-      i=$((i + 1))
-      size=$(du -sh "$DIR/$name" 2>/dev/null | cut -f1)
-      if   [ "$i" -gt $((N - 3)) ]; then tag="🔒 newest 3 — always kept"
-      elif [ "$i" -le "$MAX" ];     then tag="🗑️  oldest — eligible now"
-      else                                tag="·  kept (eligible a later run)"; fi
-      printf "  %2d. %-40s %7s  %s\n" "$i" "$name" "${size:-?}" "$tag"
-    done < <(ls -1 "$DIR" | sort)
-    echo
-    if [ "$MAX" -eq 0 ]; then echo "Nothing to delete — the 3 newest backups are always protected (you have $N)."; exit 0; fi
-    if [ ! -t 0 ]; then echo "refusing to delete without an interactive terminal."; exit 1; fi
-    printf "How many of the OLDEST backups to delete? (0–%s, Enter = 0): " "$MAX"
-    read -r CNT; CNT=${CNT:-0}
-    case "$CNT" in (*[!0-9]*) echo "not a number — nothing deleted."; exit 1;; esac
-    if [ "$CNT" -gt "$MAX" ]; then echo "max is $MAX per run — nothing deleted."; exit 1; fi
-    if [ "$CNT" -eq 0 ]; then echo "0 selected — nothing deleted."; exit 0; fi
-    echo "About to delete these $CNT oldest backup(s):"
-    ls -1 "$DIR" | sort | head -n "$CNT" | sed 's/^/  - /'
-    printf "Type 'delete' to confirm (anything else aborts): "
-    read -r CONF
-    [ "$CONF" = "delete" ] || { echo "aborted — nothing deleted."; exit 1; }
-    DELETED=0
-    while IFS= read -r name; do
-      if /bin/rm -rf "$DIR/$name"; then echo "🗑️  deleted $name"; DELETED=$((DELETED + 1)); fi
-    done < <(ls -1 "$DIR" | sort | head -n "$CNT")
-    REMAIN=$(ls -1 "$DIR" 2>/dev/null | wc -l | tr -d ' '); REMAIN=${REMAIN:-0}
-    echo "✅ deleted $DELETED backup(s); $REMAIN remain."
-    # → announce to #backups (Discord). Non-fatal: a webhook hiccup must never fail the cleanup.
-    if [ -n "${DISCORD_WEBHOOK_BACKUP:-}" ]; then
-      MSG="🧹 Backup cleanup: removed ${DELETED} old snapshot(s) — ${REMAIN} kept."
-      safe=$(printf '%s' "$MSG" | sed 's/"/\\"/g')
-      curl -fsS -H "Content-Type: application/json" \
-        -d "{\"content\":\"${safe}\"}" "$DISCORD_WEBHOOK_BACKUP" >/dev/null 2>&1 \
-        && echo "→ posted to #backups" || echo "   (Discord post failed — cleanup still done)"
-    else
-      echo "   (DISCORD_WEBHOOK_BACKUP unset — skipped #backups post)"
-    fi
 
 # mark a backup as SAVED so rotation never prunes it (creates a sibling .saved marker)
 backup-save NAME:
@@ -516,11 +453,6 @@ monitor-down:
     @echo "stopping monitor + bridge containers ..."
     docker compose stop monitor bridge
 
-# follow the bus→Discord bridge log (shows every event flowing through ntfy)
-bridge-logs:
-    @echo "checking bridge logs ..."
-    docker compose logs -f bridge
-
 # publish a digest now (peak players, joins/leaves, crashes) → #monitoring + phone
 digest-now:
     @echo "publishing digest ..."
@@ -550,6 +482,10 @@ uptime-uninstall:
 uptime-running:
     @echo "checking uptime agent ..."
     @./scripts/uptime-agent.sh status
+
+# tail the uptime agent's log
+uptime-logs:
+    @tail -n 40 -f bedrock-data/logs/uptime-agent.log
 
 # forensic summary of the CURRENT session logs (relogs, timeline, tunnel events)
 analyze:
@@ -686,4 +622,4 @@ _map-request WHO:
 # remove temporary inspection copies (backups + scripts are kept)
 clean:
     @echo "cleaning scratch dirs ..."
-    @/bin/rm -rf bedrock-data/_live_db bedrock-data/_inspect_db bedrock-data/_maptmp && echo "cleaned scratch dirs"
+    @/bin/rm -rf bedrock-data/_live_db bedrock-data/_maptmp && echo "cleaned scratch dirs"

@@ -212,7 +212,6 @@ just uptime-install       # schedule the daily 00:05 post (launchd)
 just backup            # flush + consistent snapshot (no player disconnect) → #backups
 just backups           # list (🔒 = saved/exempt)     just restore <name>    # restore one
 just backup-save <name> / backup-unsave <name>        # protect a snapshot from rotation
-just backup-clean      # interactive prune (manual; always keeps the 3 newest)
 ```
 
 **Rotation is automatic.** After each `just backup`, the newest `BACKUP_KEEP`

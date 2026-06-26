@@ -1,6 +1,6 @@
 #!/bin/sh
 # ntfy "bus" subscriber → fan-out. Streams every event published to the topic and:
-#   1) prints it to this container's log  (docker logs mc-bridge / just bridge-logs)
+#   1) prints it to this container's log  (docker logs mc-bridge / just logs bridge)
 #   2) forwards it to the matching Discord CHANNEL via webhook, routed by category.
 #
 # Category is the FIRST ntfy tag on each event: player | alert | monitor | chat.
