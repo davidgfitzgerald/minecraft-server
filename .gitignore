@@ -22,3 +22,10 @@ wetransfer_*/
 scripts/.botvenv/
 
 tools/setup/setup
+
+# ── Generated artifacts (renders, scratch, py caches) — never commit ──
+# world-map.png is a real render of the live world; scratch/caches are throwaway.
+/world-map.png
+/scratchpad/
+__pycache__/
+*.pyc

@@ -119,6 +119,17 @@ _archive-logs:
       out="bedrock-data/logs/${svc}_${TS}.log"
       if docker logs "$svc" > "$out" 2>&1; then
         echo "📝 archived $svc → $out ($(wc -l < "$out" | tr -d ' ') lines, $(du -h "$out" | cut -f1))"
+        if [ "$svc" = bedrock ]; then
+          # A crash in this now-archived container won't be in the live `docker logs` the
+          # monitor reads after a recreate, so catch it here and alert #server-status
+          # directly. The bridge is still running at this point (down/recreate stop it AFTER
+          # _archive-logs), so the bus event is delivered.
+          n=$(grep -ciE 'invalid next size|corrupted size vs|double free or corruption' "$out" || true)
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "   💥 $n box64 heap-corruption crash line(s) in this log — alerting #server-status"
+            ( . scripts/notify-lib.sh; publish_bus "💥 SERVER CRASH x${n} (box64 heap corruption) found in $(basename "$out") during shutdown/recreate — manual restart likely needed" urgent "alert,boom,skull" ) || true
+          fi
+        fi
       else
         /bin/rm -f "$out"   # container didn't exist — drop the empty file
       fi
@@ -198,7 +209,7 @@ chattest +MSG:
       && echo "→ fired test chat: '{{MSG}}' — check #in-game-chat in a second or two" \
       || { echo "❌ server not reachable — is it up? (just status)"; exit 1; }
 
-# whisper to ONE player (gamertag first):  just tell ToiletBoiler531 your base is on fire
+# whisper to ONE player (gamertag first):  just tell Steve your base is on fire
 tell PLAYER +MSG:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -326,11 +337,21 @@ backup:
     else
       echo "   (DISCORD_WEBHOOK_BACKUP unset — skipped #backups post)"
     fi
+    just _rotate-backups || true    # prune old snapshots (keep newest BACKUP_KEEP unsaved + all saved)
 
-# list backups (newest first)
+# list backups (newest first; 🔒 = saved/exempt from rotation)
 backups:
-    @echo "running backups..."
-    @ls -1t bedrock-data/backups/ 2>/dev/null || echo "no backups yet — run: just backup"
+    #!/usr/bin/env bash
+    set -uo pipefail
+    DIR="bedrock-data/backups"
+    [ -d "$DIR" ] || { echo "no backups yet — run: just backup"; exit 0; }
+    echo "📦 backups (newest first; 🔒 = saved/exempt, keep=${BACKUP_KEEP:-10}):"
+    ls -1t "$DIR" 2>/dev/null | while IFS= read -r n; do
+      [ -d "$DIR/$n" ] || continue       # skip the sibling .saved marker files
+      if [ -e "$DIR/$n.saved" ]; then tag="🔒"; else tag="  "; fi
+      sz=$(du -sh "$DIR/$n" 2>/dev/null | cut -f1)
+      printf "  %s %-44s %s\n" "$tag" "$n" "${sz:-?}"
+    done
 
 # restore a backup by folder name (stops server; keeps current world as *.pre-restore-*)
 restore NAME:
@@ -397,6 +418,85 @@ backup-clean:
     else
       echo "   (DISCORD_WEBHOOK_BACKUP unset — skipped #backups post)"
     fi
+
+# mark a backup as SAVED so rotation never prunes it (creates a sibling .saved marker)
+backup-save NAME:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DIR="bedrock-data/backups"
+    [ -d "$DIR/{{NAME}}" ] || { echo "no such backup: {{NAME}}"; echo "available:"; ls -1 "$DIR" 2>/dev/null; exit 1; }
+    touch "$DIR/{{NAME}}.saved"
+    echo "🔒 saved: {{NAME}} — exempt from rotation."
+
+# un-mark a saved backup so rotation may prune it again
+backup-unsave NAME:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    /bin/rm -f "bedrock-data/backups/{{NAME}}.saved"
+    echo "🔓 unsaved: {{NAME}} — rotation may prune it now."
+
+# internal: keep the newest BACKUP_KEEP *unsaved* snapshots; delete older unsaved ones.
+# 🔒 saved backups are always kept and don't count toward the limit. Called after `just backup`.
+_rotate-backups:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    DIR="bedrock-data/backups"
+    KEEP="${BACKUP_KEEP:-10}"; case "$KEEP" in ""|*[!0-9]*) KEEP=10;; esac
+    [ -d "$DIR" ] || exit 0
+    # unsaved backup dirs, oldest→newest (the {{world}}_YYYYMMDD-HHMMSS name sorts chronologically)
+    unsaved=$(ls -1 "$DIR" 2>/dev/null | sort | while IFS= read -r n; do
+      [ -d "$DIR/$n" ] || continue
+      [ -e "$DIR/$n.saved" ] && continue
+      echo "$n"
+    done)
+    total=$(printf '%s\n' "$unsaved" | grep -c .)
+    if [ "$total" -le "$KEEP" ]; then
+      echo "→ rotation: $total unsaved ≤ keep=$KEEP (saved snapshots always kept) — nothing to prune."
+      exit 0
+    fi
+    prune=$((total - KEEP))
+    echo "→ rotation: keep newest $KEEP unsaved + all saved; pruning $prune oldest unsaved…"
+    DELETED=0
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      if /bin/rm -rf "$DIR/$n"; then echo "  🗑️  pruned $n"; DELETED=$((DELETED + 1)); fi
+    done < <(printf '%s\n' "$unsaved" | head -n "$prune")
+    REMAIN=$(ls -1 "$DIR" 2>/dev/null | while IFS= read -r n; do [ -d "$DIR/$n" ] && echo x; done | grep -c .)
+    echo "✅ rotation: pruned $DELETED; $REMAIN backup(s) remain (incl. saved)."
+    if [ "$DELETED" -gt 0 ] && [ -n "${DISCORD_WEBHOOK_BACKUP:-}" ]; then
+      MSG="♻️ Backup rotation: pruned ${DELETED} old snapshot(s); keeping newest ${KEEP} + saved (${REMAIN} total)."
+      safe=$(printf '%s' "$MSG" | sed 's/"/\\"/g')
+      curl -fsS -H "Content-Type: application/json" -d "{\"content\":\"${safe}\"}" "$DISCORD_WEBHOOK_BACKUP" >/dev/null 2>&1 || true
+    fi
+
+# stack health report.  `just doctor` (full) — also reused by in-game/Discord !doctor (--brief).
+doctor *ARGS:
+    @./scripts/doctor.sh {{ARGS}}
+
+# internal: rate-limited, lock-guarded backup trigger shared by in-game (!backup via
+# notify.sh) and Discord (!backup via chat-bot.py). Arg = requester id, e.g. "game:Steve".
+# Prints ONE machine-parsable status line: OK <name> <size> | RATELIMIT <sec> | BUSY | ERR <msg>
+_backup-request WHO:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    WHO="{{WHO}}"
+    COOL="${BACKUP_COOLDOWN:-600}"; case "$COOL" in ""|*[!0-9]*) COOL=600;; esac
+    CDIR="bedrock-data/.backup-cooldowns"; mkdir -p "$CDIR"
+    key=$(printf '%s' "$WHO" | tr -c 'A-Za-z0-9._-' '_'); cf="$CDIR/$key"
+    now=$(date +%s)
+    if [ -f "$cf" ]; then
+      last=$(cat "$cf" 2>/dev/null || echo 0); case "$last" in ""|*[!0-9]*) last=0;; esac
+      rem=$((COOL - (now - last)))
+      [ "$rem" -gt 0 ] && { echo "RATELIMIT $rem"; exit 0; }
+    fi
+    LOCK="bedrock-data/.backup.lock"
+    if ! mkdir "$LOCK" 2>/dev/null; then echo "BUSY"; exit 0; fi
+    trap '/bin/rmdir "$LOCK" 2>/dev/null || true' EXIT
+    out=$(just backup 2>&1) || { echo "ERR backup-failed"; exit 0; }
+    printf '%s\n' "$now" > "$cf"     # start the cooldown only on a successful backup
+    name=$(printf '%s\n' "$out" | sed -nE 's#^✅ backup: bedrock-data/backups/([^ ]+) .*#\1#p' | tail -1)
+    size=$(printf '%s\n' "$out" | sed -nE 's#^✅ backup: .*\(([^,]+),.*#\1#p' | tail -1)
+    echo "OK ${name:-snapshot} ${size:-?}"
 
 # ───────────────────────── monitoring / analytics ───────────────────
 
@@ -521,7 +621,69 @@ _amulet SCRIPT:
       -v "$PWD/scripts":/scripts:ro \
       mc-tools python /scripts/$(basename {{SCRIPT}})
 
+# render a top-down terrain map of the overworld → world-map.png.
+# DB defaults to the live world (snapshotted to scratch first, never read in place);
+# pass a backup's db for a guaranteed-consistent render, e.g.
+#   just map "bedrock-data/backups/<name>/db"
+map DB="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker image inspect mc-tools >/dev/null 2>&1 || { echo "first run: building mc-tools image (~1-2 min)…"; just tools-build; }
+    SRC="{{DB}}"; [ -n "$SRC" ] || SRC="bedrock-data/worlds/{{world}}/db"
+    [ -d "$SRC" ] || { echo "no world db at: $SRC"; exit 1; }
+    echo "→ copying db to scratch (never read the source in place)…"
+    /bin/rm -rf bedrock-data/_live_db; cp -a "$SRC" bedrock-data/_live_db
+    mkdir -p bedrock-data/_maptmp
+    echo "→ extracting heightmap in mc-tools…"
+    docker run --rm --platform linux/amd64 \
+      -v "$PWD/bedrock-data/_live_db":/db \
+      -v "$PWD/scripts":/scripts:ro \
+      -v "$PWD/bedrock-data/_maptmp":/out \
+      mc-tools python /scripts/export_heightmap.py
+    echo "→ rendering on host…"
+    # the render needs python3 + matplotlib/numpy. The first python3 on PATH (esp. under
+    # the chat-bot launchd agent) may NOT have them, so pick the first interpreter that does
+    # — including the pyenv one by absolute path, where they're actually installed.
+    PYBIN=""
+    for p in "$HOME/.pyenv/shims/python3" python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+      "$p" -c 'import matplotlib, numpy' >/dev/null 2>&1 && { PYBIN="$p"; break; }
+    done
+    [ -n "$PYBIN" ] || { echo "no python3 with matplotlib+numpy found (pip install matplotlib numpy)"; exit 1; }
+    "$PYBIN" scripts/render_map.py bedrock-data/_maptmp/heightmap.bin world-map.png
+    echo "✅ wrote world-map.png (rendered with $PYBIN)"
+
+# internal: render the overworld map AND post it to #map. Shared by in-game/Discord !map.
+# Lock-guarded (renders are heavy) + rate-limited per requester. Arg = requester id, e.g.
+# "game:Steve". Prints ONE status line: OK | RATELIMIT <sec> | BUSY | ERR <msg>
+_map-request WHO:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    WHO="{{WHO}}"
+    COOL="${MAP_COOLDOWN:-300}"; case "$COOL" in ""|*[!0-9]*) COOL=300;; esac
+    CDIR="bedrock-data/.map-cooldowns"; mkdir -p "$CDIR"
+    key=$(printf '%s' "$WHO" | tr -c 'A-Za-z0-9._-' '_'); cf="$CDIR/$key"
+    now=$(date +%s)
+    if [ -f "$cf" ]; then
+      last=$(cat "$cf" 2>/dev/null || echo 0); case "$last" in ""|*[!0-9]*) last=0;; esac
+      rem=$((COOL - (now - last))); [ "$rem" -gt 0 ] && { echo "RATELIMIT $rem"; exit 0; }
+    fi
+    LOCK="bedrock-data/.map.lock"
+    if ! mkdir "$LOCK" 2>/dev/null; then echo "BUSY"; exit 0; fi
+    trap '/bin/rmdir "$LOCK" 2>/dev/null || true' EXIT
+    hook="${DISCORD_WEBHOOK_MAP:-}"
+    [ -n "$hook" ] || { echo "ERR no-webhook"; exit 0; }
+    just map >/dev/null 2>&1 || { echo "ERR render-failed"; exit 0; }
+    printf '%s\n' "$now" > "$cf"     # start the cooldown only once a render succeeds
+    cap="🗺️ Fresh survey of the realm — requested by ${WHO#*:}."
+    PAYLOAD=$(mktemp)
+    CAP="$cap" P="$PAYLOAD" python3 -c 'import json,os;open(os.environ["P"],"w").write(json.dumps({"content":os.environ["CAP"]}))' 2>/dev/null \
+      || printf '{"content":"%s"}' "🗺️ Fresh survey of the realm." > "$PAYLOAD"
+    code=$(curl -sS -o /dev/null -w '%{http_code}' \
+      -F "payload_json=<$PAYLOAD" -F "file=@world-map.png;type=image/png" "$hook")
+    /bin/rm -f "$PAYLOAD"
+    case "$code" in 2*) echo "OK posted";; *) echo "ERR discord-$code";; esac
+
 # remove temporary inspection copies (backups + scripts are kept)
 clean:
     @echo "cleaning scratch dirs ..."
-    @/bin/rm -rf bedrock-data/_live_db bedrock-data/_inspect_db && echo "cleaned scratch dirs"
+    @/bin/rm -rf bedrock-data/_live_db bedrock-data/_inspect_db bedrock-data/_maptmp && echo "cleaned scratch dirs"

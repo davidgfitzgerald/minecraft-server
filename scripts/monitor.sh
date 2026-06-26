@@ -44,6 +44,11 @@ CPU_ALERT="${MONITOR_CPU_ALERT:-300}"        # bedrock CPU% (box64 is multi-core
 MEM_ALERT="${MONITOR_MEM_ALERT:-2500}"       # bedrock memory, MiB — early warning for the heap crash
 COOLDOWN="${MONITOR_ALERT_COOLDOWN:-600}"    # seconds between "still high" reminders while an alarm holds
 la_cpu=0; la_mem=0; tunnel_down=0; cpu_alarm=0; mem_alarm=0; server_down=0; today="$(date -u +%Y-%m-%d)"; last_online=0
+# crash counter baseline: bedrock's RestartCount climbs each time `restart: unless-stopped`
+# revives a crashed process. We alert on any INCREASE; a recreate resets it to 0 (a decrease)
+# and we just re-baseline silently. Seed from the current value so restarts that happened
+# before the monitor started are treated as already-known, not re-announced on (re)start.
+last_restart=$(docker inspect -f '{{.RestartCount}}' "$BED" 2>/dev/null); last_restart=${last_restart:-0}
 # tunnel boot-grace: a just-(re)started playit takes longer than one interval to
 # authenticate and bring the tunnel up, so "no heartbeat yet" right after the stack
 # restarts is EXPECTED — not an outage. tunnel_seen latches once we've actually seen
@@ -127,9 +132,22 @@ while true; do
   else
     [ "$server_down" -eq 0 ] && { publish_bus "🔴 SERVER DOWN — bedrock is not serving (running=$running health=$health)" urgent "alert,red_circle"; server_down=1; }
   fi
-  # crash: box64 heap corruption. The monitor survives the auto-restart, so it sees it.
-  cr=$(docker logs --since "${INT}s" "$BED" 2>&1 | grep -ciE 'invalid next size|corrupted size vs|double free or corruption')
-  [ "${cr:-0}" -gt 0 ] && publish_bus "💥 SERVER CRASH x${cr} (box64 heap corruption) — auto-restarting" urgent "alert,boom,skull"
+  # crash: detect via RestartCount, which climbs every time box64 dies and `restart:
+  # unless-stopped` revives bedrock IN-PLACE. This is the reliable signal — it survives
+  # log rotation and even a crash whose lines have already scrolled out of the --since
+  # window, both of which the old plain `docker logs` grep silently missed. The grep is
+  # now used only to NAME the cause (heap corruption vs a generic process exit). A manual
+  # `docker compose restart` does NOT bump RestartCount, so this never false-fires on
+  # an intentional bounce.
+  rc_now=$(docker inspect -f '{{.RestartCount}}' "$BED" 2>/dev/null); rc_now=${rc_now:-0}
+  cr=0
+  if [ "$rc_now" -gt "$last_restart" ]; then
+    cr=$((rc_now - last_restart))
+    heap=$(docker logs --since "${INT}s" "$BED" 2>&1 | grep -ciE 'invalid next size|corrupted size vs|double free or corruption')
+    cause="process exited"; [ "${heap:-0}" -gt 0 ] && cause="box64 heap corruption"
+    publish_bus "💥 SERVER CRASH x${cr} (${cause}) — bedrock died and auto-restarted (restart #${rc_now}). If it keeps crash-looping it may need a manual restart; a 🔴 SERVER DOWN alert follows if it doesn't recover." urgent "alert,boom,skull"
+  fi
+  last_restart=$rc_now    # re-baseline (also resyncs to 0 after a recreate)
   # recovery / ready
   rb=$(docker logs --since "${INT}s" "$BED" 2>&1 | grep -c 'Server started\.')
   [ "${rb:-0}" -gt 0 ] && publish_bus "✅ server is up (ready for players)" default "alert,white_check_mark"

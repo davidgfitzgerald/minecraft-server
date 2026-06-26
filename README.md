@@ -7,12 +7,17 @@ operations layer:
 - 📲 **Notifications** — phone push (ntfy) on every join/leave; optional macOS desktop alerts
 - 📈 **Monitoring** — crash / tunnel-down / high-CPU-mem alerts, a daily digest, and a 4-panel **uptime graph**
 - 💬 **Two-way Discord chat** — in-game chat appears in `#in-game-chat`, and Discord messages appear in-game
-- 🗄️ **Backups** — consistent world snapshots with one command
+- 🎮 **Commands anywhere** — `!cmd` in-game and `/cmd` (or `!cmd`) in Discord share one rate-limited surface
+- 🗺️ **World map** — render the overworld to a hill-shaded PNG and post it to `#map`
+- 🗄️ **Backups** — consistent world snapshots, self-rotating, with one command
+- 🩺 **Health check** — `just doctor` (also `!doctor` / `/doctor`) for an at-a-glance status report
 - 🛡️ **Safety guards** — nothing restarts/stops the server while a player is online
 - 🧙 **`just setup`** — an interactive wizard that gets a fresh clone running
 
 > Runs on an Apple-Silicon Mac (the x86 Bedrock server runs under box64). The server stack is
 > Docker; a few host-side helpers run as macOS launchd agents — see [Architecture](#architecture).
+
+> **Version:** date-based (CalVer `YYYY.MM.DD`) — current in [`VERSION`](VERSION), history in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -119,7 +124,8 @@ just down "reason"   # stop (guarded; kicks players cleanly first; announces �
 just restart         # bounce bedrock only (keeps logs)
 just status          # container status        just players   # who's online
 just tunnel          # public address          just logs      # follow all logs
-just backup          # consistent world snapshot
+just backup          # consistent world snapshot (auto-rotates oldest)
+just doctor          # one-shot health report   just map       # render the overworld → world-map.png
 ```
 
 Timestamps everywhere are **UK time** (`TZ=Europe/London`), matching Discord and the graphs.
@@ -197,15 +203,67 @@ just uptime-install       # schedule the daily 00:05 post (launchd)
   ```bash
   just say  "dinner in 10"                       # broadcast to everyone (also → #in-game-chat)
   just say-raw "§6§lHeads up!§r §7dinner in 10"  # styled broadcast (§ colour codes)
-  just tell ciaranosaurus "your base is on fire" # private whisper (not relayed)
+  just tell Steve "your base is on fire"         # private whisper (not relayed)
   ```
 
 ### 🗄️ Backups
 
 ```bash
 just backup            # flush + consistent snapshot (no player disconnect) → #backups
-just backups           # list            just restore <name>    # restore one
-just backup-clean      # prune oldest, always keep the 3 newest
+just backups           # list (🔒 = saved/exempt)     just restore <name>    # restore one
+just backup-save <name> / backup-unsave <name>        # protect a snapshot from rotation
+just backup-clean      # interactive prune (manual; always keeps the 3 newest)
+```
+
+**Rotation is automatic.** After each `just backup`, the newest `BACKUP_KEEP`
+(`.env`, default **10**) *unsaved* snapshots are kept and older ones pruned.
+Mark any snapshot with `just backup-save <name>` to keep it forever — 🔒 saved
+snapshots are exempt from rotation and don't count toward the limit.
+
+Players can also trigger a backup themselves via `!backup` (in-game or Discord),
+rate-limited to one per requester every `BACKUP_COOLDOWN` (default 10 min).
+
+### 🩺 Health report
+
+```bash
+just doctor            # full report: containers, health, restart counts, CPU/mem, disk, webhooks
+just doctor --brief    # one compact line (what !doctor / /doctor reply with)
+```
+
+Runnable from in-game (`!doctor`) and Discord (`!doctor` or `/doctor`) too.
+
+### 🎮 Commands (in-game + Discord)
+
+One command surface, two front-ends. In-game chat uses the `!` prefix; Discord
+accepts the same `!` prefix **and** native `/` slash commands (in `#in-game-chat`
+or `#map`). Because there's no clean Discord↔Minecraft identity mapping,
+player-specific commands take the target as an argument in Discord.
+
+| Command | Does | Notes |
+|---|---|---|
+| `!commands` | list available commands | |
+| `!coords [player]` | report a player's coordinates | pass the target in Discord |
+| `!backup` | trigger a world snapshot | rate-limited per requester (`BACKUP_COOLDOWN`) |
+| `!map` | render the overworld → `#map` | rate-limited per requester (`MAP_COOLDOWN`) |
+| `!doctor` | health report | replies with the `--brief` line |
+| `!mail <player> <msg>` | leave in-game mail | delivered on the recipient's next join |
+| `!shrug` | ¯\\\_(ツ)_/¯ | |
+
+Slash equivalents: `/map`, `/backup`, `/doctor`, `/coords`, `/mail`, `/shrug`.
+
+> The in-game `!` commands live in the chat-bridge behavior pack and activate on
+> the next server reload; the Discord side is served by the `chatbot` agent.
+
+### 🗺️ World map
+
+`just map` reads the live world's LevelDB (in a throwaway `mc-tools` container),
+extracts a surface heightmap, and renders a north-up, hill-shaded terrain PNG
+(`world-map.png`, gitignored — it's a render of the real world). `!map` / `/map`
+post it directly to `#map` via `DISCORD_WEBHOOK_MAP`.
+
+```bash
+just map                                   # render the live world
+just map "bedrock-data/backups/<name>/db"  # render a specific backup (guaranteed-consistent)
 ```
 
 ### 🛡️ Safety guards

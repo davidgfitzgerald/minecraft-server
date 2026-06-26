@@ -102,6 +102,71 @@ online_count() {  # online_count [name] [want_present:1|0] -> echo "X/Y", or "" 
   printf ''
 }
 
+# --- in-game host commands -----------------------------------------------------------
+# The chat-bridge pack can't run host actions in its sandbox, so it prints "CHATCMD <name>
+# <args>" to the server log; we pick those up below and run them (backup/doctor/mail),
+# replying in-game via tellraw. Also delivers queued mail on join.
+JUST=$(command -v just 2>/dev/null || echo /opt/homebrew/bin/just)
+MAILDIR="bedrock-data/mailbox"
+
+cmd_say() {  # show one line in-game to everyone via tellraw (escape " and \ for JSON safety)
+  local t=$1; t=${t//\\/\\\\}; t=${t//\"/\\\"}
+  docker exec "$CONTAINER" send-command "tellraw @a {\"rawtext\":[{\"text\":\"$t\"}]}" >/dev/null 2>&1
+}
+
+mail_store() {  # mail_store <from> <to> <message>
+  local key; key=$(printf '%s' "$2" | tr -c 'A-Za-z0-9._-' '_')
+  [ -n "$key" ] || return 1
+  mkdir -p "$MAILDIR" || return 1
+  printf '%s\t%s\n' "$1" "$3" >> "$MAILDIR/$key.txt"
+}
+
+deliver_mail() {  # deliver_mail <recipient gamertag> — flush + clear their pending mail on join
+  local key box from msg
+  key=$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'); box="$MAILDIR/$key.txt"
+  [ -f "$box" ] || return 0
+  while IFS=$(printf '\t') read -r from msg; do
+    [ -n "$msg" ] || continue
+    cmd_say "§d[Mail]§r $1, from ${from}: ${msg}"
+  done < "$box"
+  /bin/rm -f "$box"
+}
+
+handle_chatcmd() {  # handle_chatcmd "<name> <args...>" — caller backgrounds this
+  local rest=$1 name args
+  name=${rest%% *}; args=${rest#"$name"}; args=${args# }
+  case "$name" in
+    backup)
+      local who res; who=$(printf '%s' "$args" | tr -d '"\\')
+      res=$("$JUST" _backup-request "game:${who:-player}" 2>/dev/null); set -- $res
+      case "${1:-ERR}" in
+        OK)        cmd_say "§a[Backup]§r ${who}'s snapshot saved ✓ (${3:-?})" ;;
+        RATELIMIT) cmd_say "§e[Backup]§r ${who}, slow down — retry in $(( ${2:-0} / 60 ))m $(( ${2:-0} % 60 ))s" ;;
+        BUSY)      cmd_say "§e[Backup]§r a backup is already running — try shortly" ;;
+        *)         cmd_say "§c[Backup]§r failed — please tell an admin" ;;
+      esac ;;
+    doctor)
+      local sum; sum=$("$JUST" doctor --brief 2>/dev/null | tail -1)
+      cmd_say "§b[Doctor]§r ${sum:-no output}" ;;
+    map)
+      local who res; who=$(printf '%s' "$args" | tr -d '"\\')
+      res=$("$JUST" _map-request "game:${who:-player}" 2>/dev/null); set -- $res
+      case "${1:-ERR}" in
+        OK)        cmd_say "§a[Map]§r posted a fresh survey to #map 🗺" ;;
+        RATELIMIT) cmd_say "§e[Map]§r a map was just made — retry in $(( ${2:-0} / 60 ))m $(( ${2:-0} % 60 ))s" ;;
+        BUSY)      cmd_say "§e[Map]§r a map is already rendering — hang tight" ;;
+        *)         cmd_say "§c[Map]§r render failed — please tell an admin" ;;
+      esac ;;
+    mail)
+      local from to msg
+      from=$(printf '%s' "$args" | awk -F'|' '{print $1}')
+      to=$(printf '%s' "$args"   | awk -F'|' '{print $2}')
+      msg=$(printf '%s' "$args"  | cut -s -d'|' -f3-)
+      if mail_store "$from" "$to" "$msg"; then cmd_say "§d[Mail]§r queued for ${to} ✉"; else cmd_say "§c[Mail]§r couldn't queue"; fi ;;
+    *) cmd_say "§c[cmd]§r unknown host command: ${name}" ;;
+  esac
+}
+
 echo "🔔 watching '$CONTAINER' for player connect/disconnect (Ctrl-C to stop)…"
 if [ -n "${NTFY_TOPIC:-}" ]; then echo "   iPhone push: ON  (ntfy topic '$NTFY_TOPIC')"; else echo "   iPhone push: off (set NTFY_TOPIC to enable)"; fi
 if [ "${NOTIFY_MACOS:-0}" = "1" ]; then echo "   macOS desktop alerts: ON"; else echo "   macOS desktop alerts: off (opt-in — set NOTIFY_MACOS=1)"; fi
@@ -128,12 +193,18 @@ docker logs -f --tail 0 "$CONTAINER" 2>&1 | while IFS= read -r line; do
       name=$(printf '%s' "$line" | sed -E 's/.*Player Spawned: (.+) xuid:.*/\1/')
       cnt=$(online_count "$name" 1); msg="✅ ${name} joined"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"
       notify "$msg" "Glass" "player,white_check_mark,video_game"
-      ledger_add "$(ts_of "$line")" joined "$name" ;;
+      ledger_add "$(ts_of "$line")" joined "$name"
+      deliver_mail "$name" ;;
     *"Player disconnected:"*)
       name=$(printf '%s' "$line" | sed -E 's/.*Player disconnected: ([^,]+),.*/\1/')
       cnt=$(online_count "$name" 0); msg="👋 ${name} left"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"
       notify "$msg" "Submarine" "player,wave,video_game"
       ledger_add "$(ts_of "$line")" left "$name" ;;
+    *"CHATCMD "*)
+      # in-game command needing host privileges (emitted by the chat-bridge pack). Background
+      # it so a 10–30s backup never stalls the log tail (and with it join/leave notifications).
+      rest=${line#*CHATCMD }
+      ( handle_chatcmd "$rest" ) & ;;
     *"players online:"*)
       if [ "${NOTIFY_TEST:-0}" = "1" ]; then
         count=$(printf '%s' "$line" | sed -E 's#.*There are ([0-9]+/[0-9]+) players online.*#\1#')

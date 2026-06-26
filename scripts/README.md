@@ -71,3 +71,17 @@ TS=$(date +%Y%m%d-%H%M%S)
 cp -a "bedrock-data/worlds/${LEVEL_NAME}" \
       "bedrock-data/backups/${LEVEL_NAME}_$TS"
 ```
+
+## World map renderer
+
+`just map` renders the overworld to a PNG. It's a two-step pipeline:
+
+| Script | Where | Purpose |
+|---|---|---|
+| `export_heightmap.py` | `mc-tools` container | reads the world db, writes a surface heightmap (`heightmap.bin`). |
+| `export_players.py` | `mc-tools` container | extracts each player's last-saved `Pos`/`DimensionId` → `players.json` (labels are **opaque short ids, not gamertags**). |
+| `render_map.py` | host (numpy + matplotlib) | stitches the heightmap into a north-up, hill-shaded PNG; optionally overlays player positions. |
+
+The container scripts share `bedrock_nbt.py` (little-endian NBT + LevelDB
+helpers). The generated `world-map.png` is **gitignored** — it's a render of the
+real world and may reveal player positions.
