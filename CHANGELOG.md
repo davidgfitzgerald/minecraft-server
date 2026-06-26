@@ -4,6 +4,10 @@ All notable changes to this project. Versioning is **date-based** (CalVer
 `YYYY.MM.DD`) — each release is stamped with the day it was cut, not a semver
 number. The current version also lives in [`VERSION`](VERSION).
 
+> **Multiple releases in one day:** the day's first release is the bare date
+> (`2026.06.26`); each subsequent same-day release appends an incrementing micro
+> counter starting at `.1` (`2026.06.26.1`, `2026.06.26.2`, …).
+
 ---
 
 ## 2026.06.26
