@@ -10,6 +10,20 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **Memory-alert thresholds retuned to cut false alarms.** The high-memory alarm
+  default rose from `2500` to `3500` MiB (`MONITOR_MEM_ALERT`) and the repeat-reminder
+  cooldown from `600`s to `3600`s (`MONITOR_ALERT_COOLDOWN`). Steady-state with a
+  player online sits at ~2.5 GiB and held flat for hours without crashing, so the old
+  2.5 GiB early-warning was firing every 10 min on normal working set rather than a
+  genuine runaway toward the box64 heap crash. 3.5 GiB still leaves headroom on the
+  7.8 GiB host. Defaults updated in `docker-compose.yml`; override either in `.env`.
+
+---
+
 ## 2026.06.26.2
 
 The "graceful shutdown & live map" release: lifecycle commands can warn players

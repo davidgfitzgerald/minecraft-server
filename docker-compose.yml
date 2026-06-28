@@ -74,9 +74,9 @@ services:
       NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.sh}
       NOTIFY_TITLE: "Minecraft (bedrock)"
       # alert thresholds — override any of these in .env (defaults shown):
-      MONITOR_MEM_ALERT: ${MONITOR_MEM_ALERT:-2500}        # bedrock memory, MiB
+      MONITOR_MEM_ALERT: ${MONITOR_MEM_ALERT:-3500}        # bedrock memory, MiB (steady-state w/ a player on is ~2.5GiB; 3.5 catches a runaway toward the heap crash without false-alarming on normal load)
       MONITOR_CPU_ALERT: ${MONITOR_CPU_ALERT:-300}         # bedrock CPU, %
-      MONITOR_ALERT_COOLDOWN: ${MONITOR_ALERT_COOLDOWN:-600} # min seconds between repeats
+      MONITOR_ALERT_COOLDOWN: ${MONITOR_ALERT_COOLDOWN:-3600} # min seconds between repeats (1h)
       HEALTHCHECK_URL: ${HEALTHCHECK_URL:-}                  # dead-man's-switch ping (healthchecks.io)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro   # read-only: only logs/stats
