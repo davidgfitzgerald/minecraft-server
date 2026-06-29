@@ -46,6 +46,10 @@ from pathlib import Path
 import discord
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# reuse the live-server `list` parser that backs the map overlay (sibling script)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from online_players import online_names  # noqa: E402
+
 CONTAINER = os.environ.get("CONTAINER", "bedrock")
 MAX_LEN = 256  # cap an injected message so a wall of text can't flood the game
 PREFIX = "!"  # chat-command prefix (shared with the in-game chat-bridge pack)
@@ -125,6 +129,18 @@ def _coords_of(player: str) -> str:
     return f"📍 **{safe}** is at `{x}, {y}, {z}`."
 
 
+def _players() -> str:
+    """List who's online right now (gamertags from the running server's `list`)."""
+    try:
+        names = online_names()
+    except Exception as e:
+        print(f"chat-bot: players failed: {e}", flush=True)
+        return "⚠️ Couldn't reach the server."
+    if not names:
+        return "🟢 Nobody's online right now."
+    return f"🟢 **{len(names)} online:** " + ", ".join(names)
+
+
 def _backup_request(who: str) -> str:
     """Rate-limited, lock-guarded backup via the shared `just _backup-request` recipe."""
     try:
@@ -177,6 +193,34 @@ def _map_request(who: str) -> str:
     return "⚠️ Map render/post failed — ask an admin to check the server."
 
 
+def _restart_request(who: str) -> str:
+    """Manual restart for a crashed/unreachable server, via the shared `just _restart-request`.
+    The recipe only restarts when it's WARRANTED (server not serving) and rate-limits, so this
+    can never bounce a healthy server people are playing on — making it abuse-resistant by
+    construction: there's nothing to gain by spamming it when the server is fine."""
+    try:
+        r = subprocess.run([JUST, "_restart-request", who], cwd=str(PROJECT_ROOT),
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        print(f"chat-bot: restart request failed: {e}", flush=True)
+        return "⚠️ Couldn't run the restart."
+    line = ""
+    for ln in (r.stdout or "").splitlines():
+        ln = ln.strip()
+        if ln.split(" ", 1)[0] in ("OK", "HEALTHY", "RATELIMIT", "ERR"):
+            line = ln
+    parts = line.split()
+    tag = parts[0] if parts else "ERR"
+    if tag == "OK":
+        return "♻️ Server was unreachable — **restarting it now.** Give it ~30–60s, then try `/players`."
+    if tag == "HEALTHY":
+        return "🟢 Server's responding fine — a restart isn't needed right now."
+    if tag == "RATELIMIT":
+        rem = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        return f"⏳ A restart was just triggered — give it {rem}s to come back before trying again."
+    return "⚠️ Restart failed — ask an admin to check the server."
+
+
 def _doctor() -> str:
     try:
         r = subprocess.run(["./scripts/doctor.sh", "--brief"], cwd=str(PROJECT_ROOT),
@@ -208,8 +252,10 @@ def handle_command(content: str, author: str, author_id: int) -> str:
     name = parts[0].lower() if parts else ""
     args = parts[1:]
     if name in ("commands", "help"):
-        return ("**Commands:** `!commands`, `!coords <player>`, `!backup`, `!map`, "
-                "`!doctor`, `!shrug`, `!mail <player> <msg>`")
+        return ("**Commands:** `!commands`, `!players`, `!coords <player>`, `!backup`, "
+                "`!map`, `!doctor`, `!restart`, `!shrug`, `!mail <player> <msg>`")
+    if name in ("players", "online"):
+        return _players()
     if name == "coords":
         if not args:
             return "From Discord, name the player: `!coords <player>` (in-game just type `!coords`)."
@@ -220,6 +266,8 @@ def handle_command(content: str, author: str, author_id: int) -> str:
         return _map_request(f"discord:{author}")
     if name == "doctor":
         return _doctor()
+    if name == "restart":
+        return _restart_request(f"discord:{author}")
     if name == "shrug":
         inject_to_minecraft(author, "¯\\_(ツ)_/¯")
         return "¯\\_(ツ)_/¯"
@@ -278,6 +326,18 @@ def main() -> None:
     @tree.command(name="doctor", description="Server health: players, CPU, memory, tunnel")
     async def slash_doctor(interaction: discord.Interaction):
         await _slash_run(interaction, _doctor)
+
+    @tree.command(name="restart", description="Restart the server — only works if it's actually crashed/unreachable")
+    async def slash_restart(interaction: discord.Interaction):
+        await _slash_run(interaction, _restart_request, f"discord:{interaction.user.display_name}")
+
+    @tree.command(name="players", description="See who's online right now")
+    async def slash_players(interaction: discord.Interaction):
+        await _slash_run(interaction, _players)
+
+    @tree.command(name="online", description="See who's online right now (alias of /players)")
+    async def slash_online(interaction: discord.Interaction):
+        await _slash_run(interaction, _players)
 
     @tree.command(name="coords", description="Show an online player's coordinates")
     @discord.app_commands.describe(player="Gamertag of an online player")

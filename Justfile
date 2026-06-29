@@ -318,6 +318,11 @@ bot-uninstall:
     @echo "removing chat-bot agent ..."
     @./scripts/chat-bot-agent.sh uninstall
 
+# bounce the running bot to pick up edited chat-bot.py (re-syncs slash commands)
+bot-restart:
+    @echo "restarting chat-bot agent ..."
+    @./scripts/chat-bot-agent.sh restart
+
 # is the permanent background bot running?
 bot-running:
     @echo "checking chat-bot agent ..."
@@ -662,6 +667,42 @@ _map-request WHO:
       -F "payload_json=<$PAYLOAD" -F "file=@world-map.png;type=image/png" "$hook")
     /bin/rm -f "$PAYLOAD"
     case "$code" in 2*) echo "OK posted";; *) echo "ERR discord-$code";; esac
+
+# internal: guard-aware manual restart trigger shared by Discord /restart + !restart
+# (chat-bot.py). Restarts bedrock ONLY when a restart is genuinely WARRANTED — i.e. the
+# server isn't actually serving — so it can never bounce a healthy server people are
+# playing on, and rate-limits so a flood of /restart can't crash-loop the box. Arg =
+# requester id, e.g. "discord:Steve". Prints ONE status line:
+#   OK | HEALTHY | RATELIMIT <sec> | ERR <msg>
+_restart-request WHO:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    WHO="{{WHO}}"
+    # WARRANTED? Only bounce a server that isn't serving. The server is considered "serving"
+    # (so a restart is REFUSED) when it BOTH answers a live `list` AND isn't Docker-unhealthy.
+    # `list` succeeding proves the game loop is alive and reachable → players could be on it →
+    # never restart. The unhealthy check is the debounced (~90s) backstop the autoheal watchdog
+    # also uses. A crashed/hung/down server fails one or both → restart proceeds.
+    health=$(docker inspect -f '{{{{.State.Health.Status}}' bedrock 2>/dev/null || echo missing)
+    reachable=0
+    docker exec bedrock send-command "list" >/dev/null 2>&1 && reachable=1
+    if [ "$reachable" = "1" ] && [ "$health" != "unhealthy" ]; then
+      echo "HEALTHY"; exit 0
+    fi
+    # rate-limit (GLOBAL, not per-user — the action is server-wide): one restart per cooldown,
+    # so repeated /restart during a crash-loop can't pile bounce-on-bounce onto a struggling box.
+    COOL="${RESTART_COOLDOWN:-120}"; case "$COOL" in ""|*[!0-9]*) COOL=120;; esac
+    CDIR="bedrock-data/.restart-cooldowns"; mkdir -p "$CDIR"; cf="$CDIR/global"
+    now=$(date +%s)
+    if [ -f "$cf" ]; then
+      last=$(cat "$cf" 2>/dev/null || echo 0); case "$last" in ""|*[!0-9]*) last=0;; esac
+      rem=$((COOL - (now - last))); [ "$rem" -gt 0 ] && { echo "RATELIMIT $rem"; exit 0; }
+    fi
+    printf '%s\n' "$now" > "$cf"   # start the cooldown on ATTEMPT (even a failed one) to stop spam
+    # in-place restart keeps the container's logs; `docker restart` SIGKILLs a wedged process
+    # after the stop-timeout, so this clears the hung-but-running crash autoheal also targets.
+    docker compose restart bedrock >/dev/null 2>&1 || { echo "ERR restart-failed"; exit 0; }
+    echo "OK restarted"
 
 # remove temporary inspection copies (backups + scripts are kept)
 clean:

@@ -43,6 +43,24 @@ services:
     stdin_open: true             # itzg image expects -i
     tty: true                    # ...and -t, so you can attach to the server console
     restart: unless-stopped
+    # Self-healing opt-in: the mc-autoheal service `docker restart`s this container when its
+    # HEALTH goes unhealthy. This is the ONLY thing that recovers the box64 "hung but running"
+    # crash — bedrock's process dies but the wrapper keeps PID 1 alive, so RestartCount never
+    # climbs and `restart: unless-stopped` never fires. Only labelled containers are touched.
+    labels:
+      - autoheal=true
+    healthcheck:
+      # The itzg image already pings the LIVE Bedrock game port (real playability, not just
+      # "process exists"). We pin the CADENCE here so "unhealthy" means SUSTAINED failure —
+      # 3 missed pings (~90s), never a single lag/compaction blip — and give a generous
+      # start_period so a slow box64 world-load never trips it. This gate drives BOTH autoheal
+      # AND the Discord /restart, so it must not false-fire. ($$ → the container expands
+      # $SERVER_PORT itself, matching the image's own check.)
+      test: ["CMD-SHELL", "/usr/local/bin/mc-monitor status-bedrock --host 127.0.0.1 --port $$SERVER_PORT"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
 
   playit:
     image: ghcr.io/playit-cloud/playit-agent:0.17
@@ -104,6 +122,30 @@ services:
     volumes:
       - ./scripts:/scripts:ro
     entrypoint: ["sh", "/scripts/bridge.sh"]
+    restart: unless-stopped
+
+  # Self-healing watchdog. Restarts any container labelled `autoheal=true` once its Docker
+  # HEALTH goes unhealthy — recovering the box64 "hung but running" crash that the
+  # `restart: unless-stopped` policy can't (the container never exits, so it never fires).
+  # Safe by design and guarded against false positives:
+  #   • unhealthy = ~90s of failed game-port pings ⇒ nobody can be playing ⇒ a restart kicks no one
+  #   • bedrock's healthcheck start_period (180s) keeps a slow world-load in `starting`, not
+  #     `unhealthy`, so a normal/recreate boot is never restarted
+  #   • `just down` REMOVES bedrock entirely, so there's no container for autoheal to fight
+  #     during intentional maintenance
+  # Lightweight (a shell loop polling the docker socket); needs RW on the socket to issue restart.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: mc-autoheal
+    logging: *default-logging
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal    # only ever touch containers we explicitly opted in
+      AUTOHEAL_INTERVAL: "30"               # re-check health every 30s
+      AUTOHEAL_START_PERIOD: "180"          # extra grace on autoheal's OWN startup before acting
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: "30"   # SIGTERM, then SIGKILL a wedged process after 30s
+      TZ: "Europe/London"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # RW (unlike the monitor): must issue `restart`
     restart: unless-stopped
 
 networks:

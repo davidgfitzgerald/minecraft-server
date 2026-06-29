@@ -11,6 +11,7 @@ operations layer:
 - 🗺️ **World map** — render the overworld to a hill-shaded PNG and post it to `#map`
 - 🗄️ **Backups** — consistent world snapshots, self-rotating, with one command
 - 🩺 **Health check** — `just doctor` (also `!doctor` / `/doctor`) for an at-a-glance status report
+- ♻️ **Self-healing** — a watchdog auto-restarts the server if it goes unhealthy; `!restart` / `/restart` forces it by hand (only when it's actually down)
 - 🛡️ **Safety guards** — nothing restarts/stops the server while a player is online
 - 🧙 **`just setup`** — an interactive wizard that gets a fresh clone running
 
@@ -66,13 +67,14 @@ Give that host + port to your friends. See [Connecting](#connecting).
 
 Two homes, by design (see *why* below):
 
-### 🐳 Docker containers (`docker compose up -d` starts all four)
+### 🐳 Docker containers (`docker compose up -d` starts all five)
 | Service | Image | Job |
 |---|---|---|
 | **bedrock** | itzg/minecraft-bedrock-server | the game server |
 | **playit** | playit-agent | outbound tunnel → public address |
 | **monitor** | docker:cli | reads logs/stats, fires health alerts, writes CSVs (mounts the docker socket **read-only**) |
 | **bridge** | curlimages/curl | subscribes to the ntfy bus, fans events out to Discord webhooks |
+| **autoheal** | willfarrell/autoheal | restarts bedrock if its healthcheck goes unhealthy (mounts the docker socket **read-write** — must issue `restart`) |
 
 ### 🖥️ Host launchd agents (macOS, start at login, auto-restart)
 | Agent | Manage with | Job |
@@ -89,7 +91,9 @@ Two homes, by design (see *why* below):
 - Host agents keep **observing/announcing even while the stack is down or being recreated**.
 
 (The `monitor` container is the exception that proves the rule: it only *reads* the daemon, so it
-mounts the socket **read-only** and is safely containerized.)
+mounts the socket **read-only** and is safely containerized. The `autoheal` container is the one
+deliberate read-**write** exception — it does exactly one thing, `docker restart` an unhealthy
+container, which is why it's a tiny purpose-built image rather than something with shell access.)
 
 ---
 
@@ -231,6 +235,26 @@ just doctor --brief    # one compact line (what !doctor / /doctor reply with)
 
 Runnable from in-game (`!doctor`) and Discord (`!doctor` or `/doctor`) too.
 
+### ♻️ Self-healing
+
+The x86 Bedrock server runs under box64, which occasionally hits a heap-corruption
+crash. Sometimes the process dies but its wrapper keeps the container's PID 1 alive —
+so the container stays *running* while the game is dead, and Docker's
+`restart: unless-stopped` policy (which only fires when a container **exits**) never
+kicks in. Two layers cover this:
+
+- **Automatic — the `autoheal` watchdog.** bedrock's healthcheck pings the live game
+  port; after ~90s of failed pings (3 misses) the container goes `unhealthy` and
+  `autoheal` `docker restart`s it. A generous `start_period` (180s) keeps a slow
+  world-load in `starting`, not `unhealthy`, so a normal boot is never restarted, and
+  `just down` removes the container so the watchdog never fights maintenance.
+- **Manual — `!restart` / `/restart` (Discord).** Forces a restart when the
+  `🔴 SERVER DOWN` alert lands. It only acts when the server is genuinely not serving
+  (fails a live `list` probe *or* is `unhealthy`) — a healthy server gets *"no restart
+  needed"* — so it can't bounce a server people are playing on, and a global cooldown
+  (`RESTART_COOLDOWN`, default 120s) prevents bounce-looping. Discord-only by design:
+  a crashed server has no in-game chat to type into.
+
 ### 🎮 Commands (in-game + Discord)
 
 One command surface, two front-ends. In-game chat uses the `!` prefix; Discord
@@ -241,14 +265,20 @@ player-specific commands take the target as an argument in Discord.
 | Command | Does | Notes |
 |---|---|---|
 | `!commands` | list available commands | |
+| `!players` (alias `!online`) | list who's online right now | in-game reads the live player list; Discord queries the server |
 | `!coords [player]` | report a player's coordinates | pass the target in Discord |
 | `!backup` | trigger a world snapshot | rate-limited per requester (`BACKUP_COOLDOWN`) |
 | `!map` | render the overworld → `#map` | rate-limited per requester (`MAP_COOLDOWN`) |
 | `!doctor` | health report | replies with the `--brief` line |
+| `!restart` | restart a crashed/unreachable server | **Discord only** — only acts when the server isn't serving; rate-limited (`RESTART_COOLDOWN`) |
 | `!mail <player> <msg>` | leave in-game mail | delivered on the recipient's next join |
 | `!shrug` | ¯\\\_(ツ)_/¯ | |
 
-Slash equivalents: `/map`, `/backup`, `/doctor`, `/coords`, `/mail`, `/shrug`.
+Slash equivalents: `/players` (alias `/online`), `/map`, `/backup`, `/doctor`, `/restart`, `/coords`, `/mail`, `/shrug`.
+
+> `!restart` / `/restart` is **Discord-only by design** — a crashed server has no
+> in-game chat to type into, so the recovery command lives where it's reachable when
+> the game is down. The autoheal watchdog handles the automatic case.
 
 > The in-game `!` commands live in the chat-bridge behavior pack and activate on
 > the next server reload; the Discord side is served by the `chatbot` agent.

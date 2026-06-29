@@ -12,6 +12,34 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ## Unreleased
 
+### Added
+
+- **Self-healing watchdog (`mc-autoheal`) — automatic recovery from the box64
+  "hung but running" crash.** A new `willfarrell/autoheal` container `docker restart`s
+  bedrock once its Docker HEALTH goes `unhealthy`. This closes a real gap: when the
+  box64 heap-corruption crash kills the server process but leaves the wrapper holding
+  PID 1, the container never exits, so `RestartCount` never climbs and the
+  `restart: unless-stopped` policy never fires — the server just sits there dead. The
+  watchdog is guarded against false positives: bedrock's healthcheck now pins an
+  explicit cadence (3 missed game-port pings ≈ 90s before `unhealthy`, never a single
+  lag/compaction blip) with a generous `start_period: 180s` so a slow world-load stays
+  `starting` rather than tripping a restart, and `just down` removes the container so
+  autoheal never fights intentional maintenance.
+- **`!restart` / `/restart` — manual server restart from in-game chat or Discord.**
+  A human-in-the-loop counterpart to the autoheal watchdog: when the `🔴 SERVER DOWN`
+  alert lands, anyone can force a restart without shell access. Abuse-resistant **by
+  construction** — the shared `just _restart-request` recipe only restarts when it's
+  WARRANTED (the server fails a live `list` probe *or* is Docker-`unhealthy`); a server
+  that's actually serving is refused with a friendly "no restart needed", so it can
+  never bounce a healthy server people are playing on. A global cooldown
+  (`RESTART_COOLDOWN`, default 120s) stops a `/restart` flood from bounce-looping a
+  struggling box.
+- **`!players` / `/players` (alias `!online` / `/online`).** See who's online from
+  in-game chat or Discord. In-game the chat-bridge pack reads the live player list
+  straight from the Script API (instant, no host roundtrip); Discord queries the
+  running server's `list` via the shared `online_players` parser. Lands in the same
+  shared command surface and the `!commands` listing.
+
 ### Changed
 
 - **Memory-alert thresholds retuned to cut false alarms.** The high-memory alarm

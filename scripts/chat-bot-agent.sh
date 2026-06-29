@@ -89,6 +89,18 @@ uninstall_agent() {
   echo "🗑  removed $LABEL (Discord→Minecraft relay will no longer run)"
 }
 
+restart_agent() {
+  # Pick up edited chat-bot.py: bounce the running agent (re-execs the script and
+  # re-syncs slash commands on_ready). If it isn't loaded yet, just install it.
+  if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+    launchctl kickstart -k "$DOMAIN/$LABEL"
+    echo "↻ restarted $LABEL (now running the latest chat-bot.py)"
+  else
+    echo "not loaded yet — installing instead ..."
+    install_agent
+  fi
+}
+
 status_agent() {
   if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
     echo "● running: $LABEL"
@@ -102,6 +114,7 @@ case "${1:-status}" in
   run)       run_foreground ;;
   install)   install_agent ;;
   uninstall) uninstall_agent ;;
+  restart)   restart_agent ;;
   status)    status_agent ;;
-  *) echo "usage: $0 {run|install|uninstall|status}"; exit 1 ;;
+  *) echo "usage: $0 {run|install|uninstall|restart|status}"; exit 1 ;;
 esac
