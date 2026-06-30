@@ -635,10 +635,7 @@ map DB="":
     docker image inspect mc-tools >/dev/null 2>&1 || { echo "first run: building mc-tools image (~1-2 min)…"; just tools-build; }
     SRC="{{DB}}"; [ -n "$SRC" ] || SRC="bedrock-data/worlds/{{world}}/db"
     [ -d "$SRC" ] || { echo "no world db at: $SRC"; exit 1; }
-    echo "→ copying db to scratch (never read the source in place)…"
-    /bin/rm -rf bedrock-data/_live_db; cp -a "$SRC" bedrock-data/_live_db
     mkdir -p bedrock-data/_maptmp
-    echo "→ extracting heightmap in mc-tools…"
     # for LIVE renders, also extract every saved player position (offline overlay), naming
     # them via the gitignored player-map. (Backup renders skip it — the map is live-only.)
     MAPMOUNT=(); MCCMD='python /scripts/export_heightmap.py'
@@ -647,12 +644,28 @@ map DB="":
       MAPMOUNT=(-v "$PWD/bedrock-data/player-map.json":/player-map.json:ro)
       MCCMD="$MCCMD && python /scripts/export_players.py /out/offline_players.json"
     fi
-    docker run --rm \
-      -v "$PWD/bedrock-data/_live_db":/db \
-      -v "$PWD/scripts":/scripts:ro \
-      -v "$PWD/bedrock-data/_maptmp":/out \
-      "${MAPMOUNT[@]}" \
-      mc-tools sh -c "$MCCMD"
+    # The live world DB is mid-write/compaction, so a plain `cp -a` can snapshot an
+    # inconsistent file set (a MANIFEST referencing a just-deleted .ldb, a vanished file
+    # under cp's feet) that LevelDB then refuses to open. It's transient — re-copying a
+    # moment later almost always lands a clean snapshot — so retry the copy+extract a few
+    # times before giving up. (Backup DBs are static and pass on the first try.)
+    echo "→ copying db to scratch + extracting heightmap in mc-tools…"
+    tries=0; max=4
+    while :; do
+      tries=$((tries + 1))
+      /bin/rm -rf bedrock-data/_live_db    # never read the source in place
+      if cp -a "$SRC" bedrock-data/_live_db 2>/dev/null && docker run --rm \
+          -v "$PWD/bedrock-data/_live_db":/db \
+          -v "$PWD/scripts":/scripts:ro \
+          -v "$PWD/bedrock-data/_maptmp":/out \
+          "${MAPMOUNT[@]}" \
+          mc-tools sh -c "$MCCMD"; then
+        break
+      fi
+      [ "$tries" -ge "$max" ] && { echo "✗ heightmap extract failed after $tries tries (live-db copy kept racing the server)"; exit 1; }
+      echo "  ↻ extract failed — the copy likely raced a live world write; retry $tries/$max in 2s…"
+      sleep 2
+    done
     echo "→ rendering on host…"
     # the render needs python3 + matplotlib/numpy. The first python3 on PATH (esp. under
     # the chat-bot launchd agent) may NOT have them, so pick the first interpreter that does
