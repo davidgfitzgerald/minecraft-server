@@ -100,33 +100,67 @@ def _sanitize_key(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", name) or "_"
 
 
-def _coords_of(player: str) -> str:
-    """Look up an online player's coords. Bedrock has no 'get coords' command, so we run
-    `querytarget` (it prints a JSON blob incl. position to the server log) and scrape it."""
-    safe = re.sub(r"[^A-Za-z0-9 _.-]", "", player)[:32].strip()
-    if not safe:
-        return "Give a player name: `!coords <player>`."
+def _coords_online(safe: str):
+    """Live coords of an ONLINE player. Bedrock has no 'get coords' command, so we run
+    `querytarget` (it prints a JSON blob incl. position to the server log) and scrape it.
+    Returns a formatted reply, or None if the player isn't online / server unreachable."""
     since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     try:
         subprocess.run(["docker", "exec", CONTAINER, "send-command", f'querytarget @a[name="{safe}"]'],
                        check=True, capture_output=True, timeout=10)
     except Exception:
-        return "Couldn't reach the server."
+        return None
     time.sleep(0.6)  # let the console response land in the log
     try:
         out = subprocess.run(["docker", "logs", "--since", f"{since}Z", CONTAINER],
                              capture_output=True, text=True, timeout=10)
         blob = (out.stdout or "") + (out.stderr or "")
     except Exception:
-        return "Couldn't read the server output."
+        return None
     m = re.search(
         r'"position"\s*:\s*\{\s*"x"\s*:\s*(-?\d+(?:\.\d+)?)\s*,\s*"y"\s*:\s*(-?\d+(?:\.\d+)?)\s*,\s*"z"\s*:\s*(-?\d+(?:\.\d+)?)',
         blob,
     )
     if not m:
-        return f"No online player named **{safe}** (or no position returned)."
+        return None
     x, y, z = (round(float(v)) for v in m.groups())
-    return f"📍 **{safe}** is at `{x}, {y}, {z}`."
+    return f"📍 **{safe}** is at `{x}, {y}, {z}` _(live)_."
+
+
+def _coords_offline(safe: str):
+    """Last-SAVED coords of an offline player, read from the world DB by resolving the
+    gamertag → ServerId via the gitignored map (`just _coords-offline`). Returns a
+    formatted reply, or None if the player isn't mapped / has no saved record."""
+    try:
+        r = subprocess.run([JUST, "_coords-offline", safe], cwd=str(PROJECT_ROOT),
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        print(f"chat-bot: offline coords failed: {e}", flush=True)
+        return None
+    line = ""
+    for ln in (r.stdout or "").splitlines():
+        ln = ln.strip()
+        if ln.split(" ", 1)[0] in ("OK", "NOMAP", "NORECORD"):
+            line = ln
+    parts = line.split()
+    if len(parts) < 5 or parts[0] != "OK":
+        return None
+    dim, x, y, z = parts[1], parts[2], parts[3], parts[4]
+    return f"📍 **{safe}** was last at `{x}, {y}, {z}` in the **{dim}** _(offline — last saved)_."
+
+
+def _coords_of(player: str) -> str:
+    """Coords for a player: exact LIVE position if they're online, else their last-saved
+    position from the world DB (via the gitignored gamertag→ServerId map)."""
+    safe = re.sub(r"[^A-Za-z0-9 _.-]", "", player)[:32].strip()
+    if not safe:
+        return "Give a player name: `!coords <player>`."
+    return (
+        _coords_online(safe)
+        or _coords_offline(safe)
+        or (f"📍 No live position for **{safe}** (they're offline), and they're not in the "
+            f"coords map yet. Add them to `bedrock-data/player-map.json`.")
+    )
 
 
 def _players() -> str:

@@ -704,6 +704,26 @@ _restart-request WHO:
     docker compose restart bedrock >/dev/null 2>&1 || { echo "ERR restart-failed"; exit 0; }
     echo "OK restarted"
 
+# internal: read an OFFLINE player's last-saved coords from the world DB, resolving the
+# gamertag via the gitignored map (bedrock-data/player-map.json → ServerId). Used by
+# !coords / /coords as a fallback when the player isn't online. Reads a COPY of the live
+# db (never in place). Prints ONE status line:  OK <dim> <x> <y> <z> | NOMAP | NORECORD
+_coords-offline GAMERTAG:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    [ -f bedrock-data/player-map.json ] || { echo "NOMAP"; exit 0; }
+    docker image inspect mc-tools >/dev/null 2>&1 || just tools-build >/dev/null 2>&1 || { echo "NORECORD"; exit 0; }
+    /bin/rm -rf bedrock-data/_coords_db
+    cp -a "bedrock-data/worlds/{{world}}/db" bedrock-data/_coords_db
+    out=$(docker run --rm --platform linux/amd64 \
+      -e LOOKUP_GAMERTAG="{{GAMERTAG}}" \
+      -v "$PWD/bedrock-data/_coords_db":/db \
+      -v "$PWD/scripts":/scripts:ro \
+      -v "$PWD/bedrock-data/player-map.json":/player-map.json:ro \
+      mc-tools python /scripts/saved_pos.py 2>/dev/null)
+    /bin/rm -rf bedrock-data/_coords_db
+    printf '%s\n' "$out" | grep -E '^(OK|NOMAP|NORECORD)' | tail -1 || echo "NORECORD"
+
 # remove temporary inspection copies (backups + scripts are kept)
 clean:
     @echo "cleaning scratch dirs ..."
