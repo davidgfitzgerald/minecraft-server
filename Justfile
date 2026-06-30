@@ -93,14 +93,35 @@ down MSG="":
     echo "✅ down complete — stack stopped & removed. hc.io will show DOWN shortly."
 
 # restart just the bedrock server (guarded; reuses container, so logs are kept).
-# Always prompts for a #server-status message (Enter = default); pass one inline to skip: just restart "Quick bounce"
+# Announces "server is back" to #server-status ONLY if players were online when you bounced
+# it, or you pass a message: just restart "we're back". Nobody online + no message = silent
+# (covert restart). With players online it prompts for the message (Enter = default).
 restart MSG="":
-    @./scripts/guard.sh "restart the bedrock server (just restart)"
-    @just _shutdown-countdown "restarting" || true   # optional in-game countdown (SHUTDOWN_COUNTDOWN)
-    @echo "restarting bedrock server ..."
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ./scripts/guard.sh "restart the bedrock server (just restart)" || exit 1
+    # how many players are online right now? ("" / 0 if the server isn't responding)
+    count_online() {
+      docker exec bedrock send-command "list" >/dev/null 2>&1 || { echo 0; return; }
+      sleep 0.5
+      docker logs --since 4s bedrock 2>&1 \
+        | grep -oE 'There are [0-9]+/[0-9]+ players online' | tail -1 \
+        | grep -oE '[0-9]+' | head -1
+    }
+    # capture BEFORE the bounce — a "server is back" ping only matters if players were dropped
+    online="$(count_online)"; online="${online:-0}"
+    just _shutdown-countdown "restarting" || true   # optional in-game countdown (SHUTDOWN_COUNTDOWN)
+    echo "restarting bedrock server ..."
     docker compose restart bedrock
-    @just _on-start "{{MSG}}" force    # always announce the return to Discord (prompts for a message)
-    @./scripts/reconcile.sh || true    # backfill any join/leave missed across the bounce
+    # Announce the return only if players were online, OR you passed an explicit message
+    # (just restart "we're back"). A covert restart — nobody online, no message — stays
+    # silent on #server-status.
+    if [ -n "{{MSG}}" ] || [ "$online" -gt 0 ] 2>/dev/null; then
+      just _on-start "{{MSG}}" force
+    else
+      echo "→ nobody was online — skipping the #server-status announcement (covert restart)."
+    fi
+    ./scripts/reconcile.sh || true    # backfill any join/leave missed across the bounce
 
 # recreate containers (guarded; needed after editing docker-compose.yml; archives logs first)
 recreate:
