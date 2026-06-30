@@ -586,9 +586,9 @@ audit:
     @echo "running audit ..."
     @just _amulet scripts/audit_keys.py
 
-# build the world-tools image once (amulet-leveldb compiled in; ~1-2 min, amd64)
+# build the world-tools image once (amulet-leveldb compiled in; ~25s, native arch)
 tools-build:
-    docker build --platform linux/amd64 -f scripts/tools.Dockerfile -t mc-tools scripts/
+    docker build -f scripts/tools.Dockerfile -t mc-tools scripts/
 
 # internal: run a world-data python script against a copy of the live world db
 _amulet SCRIPT:
@@ -598,7 +598,7 @@ _amulet SCRIPT:
     echo "running _amulet {{SCRIPT}} against a copy of the live world db ..."
     /bin/rm -rf bedrock-data/_live_db
     cp -a "bedrock-data/worlds/{{world}}/db" bedrock-data/_live_db
-    docker run --rm --platform linux/amd64 \
+    docker run --rm \
       -v "$PWD/bedrock-data/_live_db":/db \
       -v "$PWD/scripts":/scripts:ro \
       mc-tools python /scripts/$(basename {{SCRIPT}})
@@ -626,7 +626,7 @@ map DB="":
       MAPMOUNT=(-v "$PWD/bedrock-data/player-map.json":/player-map.json:ro)
       MCCMD="$MCCMD && python /scripts/export_players.py /out/offline_players.json"
     fi
-    docker run --rm --platform linux/amd64 \
+    docker run --rm \
       -v "$PWD/bedrock-data/_live_db":/db \
       -v "$PWD/scripts":/scripts:ro \
       -v "$PWD/bedrock-data/_maptmp":/out \
@@ -732,7 +732,7 @@ _coords-offline GAMERTAG:
     docker image inspect mc-tools >/dev/null 2>&1 || just tools-build >/dev/null 2>&1 || { echo "NORECORD"; exit 0; }
     /bin/rm -rf bedrock-data/_coords_db
     cp -a "bedrock-data/worlds/{{world}}/db" bedrock-data/_coords_db
-    out=$(docker run --rm --platform linux/amd64 \
+    out=$(docker run --rm \
       -e LOOKUP_GAMERTAG="{{GAMERTAG}}" \
       -v "$PWD/bedrock-data/_coords_db":/db \
       -v "$PWD/scripts":/scripts:ro \

@@ -15,7 +15,10 @@ Output record (little-endian), 1288 bytes each:
 Runs in the mc-tools container (amulet-leveldb = raw LevelDB only; SubChunk/NBT decode is
 hand-rolled here). render_map.py turns this into a PNG on the host.
 """
+import os
 import struct
+from multiprocessing import get_context
+
 from bedrock_nbt import open_db
 
 T_DATA3D = 0x2B
@@ -276,6 +279,80 @@ def block_at(dec, lx, ly, lz):
     return names[pidx] if pidx < len(names) else "minecraft:air"
 
 
+def _init_worker():
+    # Deprioritise decode workers so the live game server keeps CPU priority under
+    # contention — the parallel decode is a brief burst, not a steady load.
+    try:
+        os.nice(10)
+    except Exception:
+        pass
+
+
+# Worklist shared with forked workers via copy-on-write — NEVER pickled across the pipe.
+# Each task is just an integer index into this; workers return small RGB results only.
+# (Shipping the ~110 MB of raw SubChunk bytes per-task instead made the pool slower than
+# a single core — the pipe transfer dwarfed the decode.)
+_JOBS = None
+
+
+def _decode_index(i):
+    """Worker entry point: decode job i (read from the inherited _JOBS) → (i, rgb, unknown)."""
+    cx, cz, hb, rgb, unk = _decode_chunk(_JOBS[i])
+    return i, rgb, unk
+
+
+def _decode_chunk(job):
+    """Pure, DB-free decode of one chunk. Runs in a worker process.
+
+    job = (cx, cz, hb, subvals) where subvals maps subY -> raw SubChunk value bytes.
+    Returns (cx, cz, hb, rgb_bytes, unknown_counts). Mirrors the original column scan
+    exactly, but reads SubChunk bytes from `subvals` (pre-read by the parent) instead of
+    the LevelDB — workers can't open the DB (single-process lock)."""
+    cx, cz, hb, subvals = job
+    heights = struct.unpack("<256h", hb)
+    rgb = bytearray(768)
+    cache = {}
+    unknown = {}
+
+    def getdec(si):
+        if si not in cache:
+            v = subvals.get(si)
+            try:
+                cache[si] = decode_subchunk(v) if v is not None else None
+            except Exception:
+                cache[si] = None
+        return cache[si]
+
+    for idx in range(256):
+        lx, lz = idx & 15, idx >> 4   # flat index = z*16 + x
+        startY = heights[idx] + WORLD_FLOOR
+        col = DEFAULT
+        for y in range(startY + 1, startY - 6, -1):   # scan to first real surface block
+            dec = getdec(y >> 4)
+            if dec is None:
+                continue
+            name = block_at(dec, lx, y & 15, lz)
+            c = get_color(name)
+            if c == "skip":
+                continue
+            if c is None:
+                unknown[name] = unknown.get(name, 0) + 1
+                col = DEFAULT
+            else:
+                col = c
+            break
+        rgb[idx * 3:idx * 3 + 3] = bytes(col)
+    return cx, cz, hb, bytes(rgb), unknown
+
+
+def _worker_count():
+    env = os.environ.get("MAP_WORKERS", "")
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    cpu = os.cpu_count() or 2
+    return max(2, min(4, cpu - 2))   # leave cores free for the live game server
+
+
 def main():
     db = open_db()
     best = {}      # (cx,cz) -> (priority, 512B heightmap)   Data3D(2) > Data2D(1)
@@ -299,61 +376,62 @@ def main():
         if cur is None or prio > cur[0]:
             best[(cx, cz)] = (prio, v[:512])
 
+    # Build per-chunk jobs in the parent: read ONLY the surface-band SubChunk values (cheap
+    # C++ reads) so the heavy NBT/column decode can run in parallel worker processes. The
+    # band [lo_b, hi_b] is a superset of every column's 7-block downward scan, so a worker
+    # never needs a SubChunk the parent didn't ship.
+    jobs = []
+    for (cx, cz), (_, hb) in best.items():
+        heights = struct.unpack("<256h", hb)
+        lo_b = (min(heights) + WORLD_FLOOR - 5) >> 4
+        hi_b = (max(heights) + WORLD_FLOOR + 1) >> 4
+        sk = subkeys.get((cx, cz), {})
+        subvals = {}
+        for si in range(lo_b, hi_b + 1):
+            key = sk.get(si)
+            if key is not None:
+                val = db.get(key)
+                if val is not None:
+                    subvals[si] = val
+        jobs.append((cx, cz, hb, subvals))
+
+    global _JOBS
+    _JOBS = jobs   # forked workers inherit this (COW); only indices cross the pipe
+
+    workers = _worker_count()
+    n = len(jobs)
+    if n < 500 or workers <= 1:
+        pool = None
+        results = map(_decode_index, range(n))   # tiny worlds: skip pool/fork overhead
+    else:
+        # fork (not spawn) so workers share _JOBS via copy-on-write instead of re-pickling it
+        pool = get_context("fork").Pool(workers, initializer=_init_worker)
+        results = pool.imap(_decode_index, range(n), chunksize=64)   # ordered → identical record order
+
     unknown = {}
     lo = hi = None
     nrec = 0
     with open("/out/heightmap.bin", "wb") as f:
-        for (cx, cz), (_, hb) in best.items():
-            heights = struct.unpack("<256h", hb)
-            rgb = bytearray(768)
-            sk = subkeys.get((cx, cz), {})
-            cache = {}
-
-            def getdec(si):
-                if si not in cache:
-                    key = sk.get(si)
-                    if key is None:
-                        cache[si] = None
-                    else:
-                        try:
-                            cache[si] = decode_subchunk(db.get(key))
-                        except Exception:
-                            cache[si] = None
-                return cache[si]
-
-            for idx in range(256):
-                lx, lz = idx & 15, idx >> 4   # flat index = z*16 + x
-                stored = heights[idx]
-                if lo is None or stored < lo: lo = stored
-                if hi is None or stored > hi: hi = stored
-                startY = stored + WORLD_FLOOR
-                col = DEFAULT
-                for y in range(startY + 1, startY - 6, -1):   # scan to first real surface block
-                    dec = getdec(y >> 4)
-                    if dec is None:
-                        continue
-                    name = block_at(dec, lx, y & 15, lz)
-                    c = get_color(name)
-                    if c == "skip":
-                        continue
-                    if c is None:
-                        unknown[name] = unknown.get(name, 0) + 1
-                        col = DEFAULT
-                    else:
-                        col = c
-                    break
-                rgb[idx * 3:idx * 3 + 3] = bytes(col)
-
+        for i, rgb, unk in results:
+            cx, cz, hb, _sv = jobs[i]
             f.write(struct.pack("<ii", cx, cz))
             f.write(hb)
             f.write(rgb)
+            hs = struct.unpack("<256h", hb); mn = min(hs); mx = max(hs)
+            if lo is None or mn < lo: lo = mn
+            if hi is None or mx > hi: hi = mx
+            for nm, c in unk.items():
+                unknown[nm] = unknown.get(nm, 0) + c
             nrec += 1
+    if pool is not None:
+        pool.close(); pool.join()
 
     try:
         db.close()  # release the LevelDB lock so export_players.py (same container) can open it
     except Exception:
         pass
-    print(f"exported {nrec} overworld chunks (stored height {lo}..{hi}) -> /out/heightmap.bin")
+    print(f"exported {nrec} overworld chunks (stored height {lo}..{hi}) -> /out/heightmap.bin "
+          f"({workers} worker(s))")
     if unknown:
         top = sorted(unknown.items(), key=lambda kv: -kv[1])[:12]
         print("uncoloured top blocks: " + ", ".join(f"{n}×{c}" for n, c in top))
