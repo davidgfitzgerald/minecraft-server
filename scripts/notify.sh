@@ -195,7 +195,11 @@ docker logs -f --tail 0 "$CONTAINER" 2>&1 | while IFS= read -r line; do
       cnt=$(online_count "$name" 1); msg="✅ ${name} joined"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"
       notify "$msg" "Glass" "player,white_check_mark,video_game"
       ledger_add "$(ts_of "$line")" joined "$name"
-      deliver_mail "$name" ;;
+      deliver_mail "$name"
+      # learn this player's gamertag→ServerId mapping for offline /coords. Backgrounded so the
+      # querytarget round-trip never stalls the log tail; cheap (no world-db read — that hop is
+      # done lazily at lookup). Self-maintaining: the map fills in as people play.
+      ( python3 scripts/capture_player_map.py "$name" ) & ;;
     *"Player disconnected:"*)
       name=$(printf '%s' "$line" | sed -E 's/.*Player disconnected: ([^,]+),.*/\1/')
       cnt=$(online_count "$name" 0); msg="👋 ${name} left"; [ -n "$cnt" ] && msg="${msg} — ${cnt} online"

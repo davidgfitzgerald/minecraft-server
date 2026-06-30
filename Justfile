@@ -290,6 +290,11 @@ notify-uninstall:
     @echo "removing notify agent ..."
     @./scripts/notify-agent.sh uninstall
 
+# bounce the running watcher to pick up edited notify.sh (e.g. the join→map capture)
+notify-restart:
+    @echo "restarting notify agent ..."
+    @./scripts/notify-agent.sh restart
+
 # is the permanent background watcher running?
 notify-running:
     @echo "checking notify agent ..."

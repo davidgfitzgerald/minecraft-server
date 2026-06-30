@@ -58,6 +58,18 @@ uninstall_agent() {
   echo "🗑  removed $LABEL (notifications will no longer run in the background)"
 }
 
+restart_agent() {
+  # Pick up edited notify.sh (or the capture-map helper): bounce the running agent. If it
+  # isn't loaded yet, just install it.
+  if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+    launchctl kickstart -k "$DOMAIN/$LABEL"
+    echo "↻ restarted $LABEL (now running the latest notify.sh)"
+  else
+    echo "not loaded yet — installing instead ..."
+    install_agent
+  fi
+}
+
 status_agent() {
   if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
     echo "● running: $LABEL"
@@ -70,6 +82,7 @@ status_agent() {
 case "${1:-status}" in
   install)   install_agent ;;
   uninstall) uninstall_agent ;;
+  restart)   restart_agent ;;
   status)    status_agent ;;
-  *) echo "usage: $0 {install|uninstall|status}"; exit 1 ;;
+  *) echo "usage: $0 {install|uninstall|restart|status}"; exit 1 ;;
 esac
