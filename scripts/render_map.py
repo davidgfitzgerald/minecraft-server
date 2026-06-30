@@ -132,7 +132,8 @@ def _place_labels(fig, ax, items, dots):
 SRC = sys.argv[1] if len(sys.argv) > 1 else "bedrock-data/_maptmp/heightmap.bin"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "world-map.png"
 PLAYERS = sys.argv[3] if len(sys.argv) > 3 else None  # optional players.json → overlay markers
-REC = 8 + 512
+REC = 8 + 512 + 768   # <cx i32><cz i32><256 i16 height><256 ×(u8 r,g,b)>  (export_heightmap.py)
+WORLD_FLOOR = -64     # stored height is the surface Y offset from here (Bedrock 1.18+)
 
 raw = open(SRC, "rb").read()
 n = len(raw) // REC
@@ -146,31 +147,32 @@ for i in range(n):
     o = i * REC
     cx, cz = struct.unpack_from("<ii", raw, o)
     h = np.frombuffer(raw, dtype="<i2", count=256, offset=o + 8).reshape(16, 16).astype(float)
-    recs.append((cx, cz, h))
+    col = np.frombuffer(raw, dtype=np.uint8, count=768, offset=o + 8 + 512).reshape(16, 16, 3)
+    recs.append((cx, cz, h, col))
     minx, maxx = min(minx, cx), max(maxx, cx)
     minz, maxz = min(minz, cz), max(maxz, cz)
 
 W = (maxx - minx + 1) * 16
 H = (maxz - minz + 1) * 16
 grid = np.full((H, W), np.nan)
-for cx, cz, h in recs:
+cols = np.zeros((H, W, 3), dtype=np.uint8)   # per-column true-block RGB
+for cx, cz, h, col in recs:
     px = (cx - minx) * 16
     pz = (cz - minz) * 16
-    grid[pz:pz + 16, px:px + 16] = h  # heightmap flat index z*16+x → row=z, col=x
+    grid[pz:pz + 16, px:px + 16] = h         # flat index z*16+x → row=z, col=x
+    cols[pz:pz + 16, px:px + 16] = col
 
 valid = ~np.isnan(grid)
-lo = float(np.nanpercentile(grid, 2))
-hi = float(np.nanpercentile(grid, 98))
+realY = grid + WORLD_FLOOR
+lo = float(np.nanpercentile(np.where(valid, realY, np.nan), 2))
+hi = float(np.nanpercentile(np.where(valid, realY, np.nan), 98))
 
-# elevation ramp: deep water → shallow → beach → grass → forest → dirt → rock → snow
-cmap = LinearSegmentedColormap.from_list("mc", [
-    "#15324f", "#1f5c8b", "#2f87b8", "#cdbd8e",
-    "#5a9e4b", "#3c7a33", "#7d6b50", "#9a9a92", "#f3f5f8",
-])
+# base colour = the real top-block colour, then hillshade it with the heightmap for relief
+base = cols.astype(float) / 255.0            # H×W×3
 ls = LightSource(azdeg=315, altdeg=45)
-gfill = np.where(valid, grid, lo)
-rgb = ls.shade(gfill, cmap=cmap, blend_mode="soft", vert_exag=3.0, dx=1, dy=1, vmin=lo, vmax=hi)
-rgb[~valid] = [0.07, 0.08, 0.10, 1.0]  # ungenerated area = dark background
+gfill = np.where(valid, realY, lo)
+rgb = ls.shade_rgb(base, gfill, blend_mode="soft", vert_exag=3.0, dx=1, dy=1)
+rgb[~valid] = [0.07, 0.08, 0.10]             # ungenerated area = dark background
 
 aspect = H / W
 fig, ax = plt.subplots(figsize=(12, max(4.0, 12 * aspect) + 0.6), dpi=130)
