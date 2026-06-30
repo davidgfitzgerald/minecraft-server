@@ -281,13 +281,33 @@ def _mail_add(to: str, frm: str, msg: str) -> str:
     return f"✉️ Mail queued for **{to.strip()}** — delivered on their next join."
 
 
+# Canonical command catalog — the single source of truth for `!commands` / `/commands`.
+# Each entry is (name, usage-suffix, description). Keep in sync with the slash definitions
+# below and with the in-game pack (bedrock-data/behavior_packs/chat-bridge/scripts/main.js).
+COMMAND_CATALOG = [
+    ("commands", "",                  "List these commands"),
+    ("players",  "",                  "See who's online right now (alias: online)"),
+    ("coords",   " <player>",         "Show a player's coordinates"),
+    ("map",      "",                  "Render the overworld map → #map"),
+    ("backup",   "",                  "Take a consistent world backup (rate-limited)"),
+    ("doctor",   "",                  "Server health: players, CPU, memory, tunnel"),
+    ("restart",  "",                  "Restart the server (only if it's crashed/unreachable)"),
+    ("mail",     " <player> <msg>",   "Leave mail for a player, delivered on their next join"),
+    ("shrug",    "",                  "¯\\_(ツ)_/¯ — posts in Discord and in-game"),
+]
+
+
+def format_commands() -> str:
+    lines = [f"`/{n}{usage}` — {desc}" for n, usage, desc in COMMAND_CATALOG]
+    return "**Commands** (type `/` or `!`):\n" + "\n".join(lines)
+
+
 def handle_command(content: str, author: str, author_id: int) -> str:
     parts = content[len(PREFIX):].split()
     name = parts[0].lower() if parts else ""
     args = parts[1:]
     if name in ("commands", "help"):
-        return ("**Commands:** `!commands`, `!players`, `!coords <player>`, `!backup`, "
-                "`!map`, `!doctor`, `!restart`, `!shrug`, `!mail <player> <msg>`")
+        return format_commands()
     if name in ("players", "online"):
         return _players()
     if name == "coords":
@@ -348,6 +368,11 @@ def main() -> None:
             print(f"chat-bot: slash handler error: {e}", flush=True)
             reply = "⚠️ Command failed."
         await interaction.followup.send(reply)
+
+    @tree.command(name="commands", description="List all available commands")
+    async def slash_commands(interaction: discord.Interaction):
+        # instant + local (no host work) → respond directly instead of defer/followup
+        await interaction.response.send_message(format_commands())
 
     @tree.command(name="map", description="Render the overworld and post it to #map")
     async def slash_map(interaction: discord.Interaction):
