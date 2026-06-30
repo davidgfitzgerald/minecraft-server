@@ -227,31 +227,35 @@ def _map_request(who: str) -> str:
     return "⚠️ Map render/post failed — ask an admin to check the server."
 
 
-def _restart_request(who: str) -> str:
-    """Manual restart for a crashed/unreachable server, via the shared `just _restart-request`.
-    The recipe only restarts when it's WARRANTED (server not serving) and rate-limits, so this
-    can never bounce a healthy server people are playing on — making it abuse-resistant by
-    construction: there's nothing to gain by spamming it when the server is fine."""
+def _restart_request(who: str, reason: str) -> str:
+    """Manual restart via the shared `just _restart-request`. Works whether or not the server
+    is healthy, but is safe by construction: when players are online the recipe runs the
+    in-game 60s→10s countdown (and pings #server-status), it logs WHO asked and WHY, and it
+    rate-limits PER REQUESTER (default 10m). `reason` is required — the Discord front-end
+    enforces it before we ever get here."""
+    reason = " ".join((reason or "").split()).strip()
+    if not reason:
+        return "Please include a reason: `!restart <reason>`."
     try:
-        r = subprocess.run([JUST, "_restart-request", who], cwd=str(PROJECT_ROOT),
-                           capture_output=True, text=True, timeout=120)
+        # may block for the full countdown (~60s) plus the bounce, so allow generous time.
+        r = subprocess.run([JUST, "_restart-request", who, reason], cwd=str(PROJECT_ROOT),
+                           capture_output=True, text=True, timeout=180)
     except Exception as e:
         print(f"chat-bot: restart request failed: {e}", flush=True)
         return "⚠️ Couldn't run the restart."
     line = ""
     for ln in (r.stdout or "").splitlines():
         ln = ln.strip()
-        if ln.split(" ", 1)[0] in ("OK", "HEALTHY", "RATELIMIT", "ERR"):
+        if ln.split(" ", 1)[0] in ("OK", "RATELIMIT", "ERR"):
             line = ln
     parts = line.split()
     tag = parts[0] if parts else "ERR"
     if tag == "OK":
-        return "♻️ Server was unreachable — **restarting it now.** Give it ~30–60s, then try `/players`."
-    if tag == "HEALTHY":
-        return "🟢 Server's responding fine — a restart isn't needed right now."
+        return (f"♻️ **Restarting the server now** — reason: _{reason}_. Anyone online got a "
+                "60s in-game warning. Give it ~30–60s, then try `/players`.")
     if tag == "RATELIMIT":
         rem = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        return f"⏳ A restart was just triggered — give it {rem}s to come back before trying again."
+        return f"⏳ You restarted recently — try again in {rem // 60}m {rem % 60}s."
     return "⚠️ Restart failed — ask an admin to check the server."
 
 
@@ -291,7 +295,7 @@ COMMAND_CATALOG = [
     ("map",      "",                  "Render the overworld map → #map"),
     ("backup",   "",                  "Take a consistent world backup (rate-limited)"),
     ("doctor",   "",                  "Server health: players, CPU, memory, tunnel"),
-    ("restart",  "",                  "Restart the server (only if it's crashed/unreachable)"),
+    ("restart",  " <reason>",         "Restart the server (warns players, rate-limited per person)"),
     ("mail",     " <player> <msg>",   "Leave mail for a player, delivered on their next join"),
     ("shrug",    "",                  "¯\\_(ツ)_/¯ — posts in Discord and in-game"),
 ]
@@ -321,7 +325,9 @@ def handle_command(content: str, author: str, author_id: int) -> str:
     if name == "doctor":
         return _doctor()
     if name == "restart":
-        return _restart_request(f"discord:{author}")
+        if not args:
+            return "Please include a reason: `!restart <reason>`."
+        return _restart_request(f"discord:{author}", " ".join(args))
     if name == "shrug":
         inject_to_minecraft(author, "¯\\_(ツ)_/¯")
         return "¯\\_(ツ)_/¯"
@@ -386,9 +392,10 @@ def main() -> None:
     async def slash_doctor(interaction: discord.Interaction):
         await _slash_run(interaction, _doctor)
 
-    @tree.command(name="restart", description="Restart the server — only works if it's actually crashed/unreachable")
-    async def slash_restart(interaction: discord.Interaction):
-        await _slash_run(interaction, _restart_request, f"discord:{interaction.user.display_name}")
+    @tree.command(name="restart", description="Restart the server (warns players, rate-limited per person)")
+    @discord.app_commands.describe(reason="Why you're restarting — required, and logged")
+    async def slash_restart(interaction: discord.Interaction, reason: str):
+        await _slash_run(interaction, _restart_request, f"discord:{interaction.user.display_name}", reason)
 
     @tree.command(name="players", description="See who's online right now")
     async def slash_players(interaction: discord.Interaction):

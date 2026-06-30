@@ -178,6 +178,8 @@ _shutdown-countdown REASON="going down":
     online="$(count_online)"
     [ "${online:-0}" -gt 0 ] 2>/dev/null || { echo "→ countdown: nobody online — skipping the wait."; exit 0; }
     echo "→ ${SECS}s in-game countdown before {{REASON}} (${online} online)…"
+    # also tell Discord (#server-status), ONCE — not per-tick, so we don't spam the channel.
+    ( . scripts/notify-lib.sh; publish_bus "🔄 Server {{REASON}} in ${SECS}s — ${online} player(s) online were warned in-game." default "alert,hourglass_flowing_sand" ) || true
     t="$SECS"
     while [ "$t" -gt 0 ]; do
       echo "   ⏳ ${t}s — warning ${online} player(s)…"
@@ -719,40 +721,39 @@ _map-request WHO:
     /bin/rm -f "$PAYLOAD"
     case "$code" in 2*) echo "OK posted";; *) echo "ERR discord-$code";; esac
 
-# internal: guard-aware manual restart trigger shared by Discord /restart + !restart
-# (chat-bot.py). Restarts bedrock ONLY when a restart is genuinely WARRANTED — i.e. the
-# server isn't actually serving — so it can never bounce a healthy server people are
-# playing on, and rate-limits so a flood of /restart can't crash-loop the box. Arg =
-# requester id, e.g. "discord:Steve". Prints ONE status line:
-#   OK | HEALTHY | RATELIMIT <sec> | ERR <msg>
-_restart-request WHO:
+# internal: manual restart trigger shared by Discord /restart + !restart (chat-bot.py).
+# Restarts bedrock UNCONDITIONALLY (no "only if crashed" health gate) but safely: it runs
+# the in-game 60s→10s countdown when players are online (which also pings #server-status),
+# records who asked + why to bedrock-data/restart.log, and rate-limits PER REQUESTER so one
+# person can't bounce the box repeatedly. Args:
+#   WHO    = requester id, e.g. "discord:Steve"
+#   REASON = free-text reason (required by the Discord front-end)
+# Prints ONE status line:  OK | RATELIMIT <sec> | ERR <msg>
+_restart-request WHO REASON:
     #!/usr/bin/env bash
     set -uo pipefail
     WHO="{{WHO}}"
-    # WARRANTED? Only bounce a server that isn't serving. The server is considered "serving"
-    # (so a restart is REFUSED) when it BOTH answers a live `list` AND isn't Docker-unhealthy.
-    # `list` succeeding proves the game loop is alive and reachable → players could be on it →
-    # never restart. The unhealthy check is the debounced (~90s) backstop the autoheal watchdog
-    # also uses. A crashed/hung/down server fails one or both → restart proceeds.
-    health=$(docker inspect -f '{{{{.State.Health.Status}}' bedrock 2>/dev/null || echo missing)
-    reachable=0
-    docker exec bedrock send-command "list" >/dev/null 2>&1 && reachable=1
-    if [ "$reachable" = "1" ] && [ "$health" != "unhealthy" ]; then
-      echo "HEALTHY"; exit 0
-    fi
-    # rate-limit (GLOBAL, not per-user — the action is server-wide): one restart per cooldown,
-    # so repeated /restart during a crash-loop can't pile bounce-on-bounce onto a struggling box.
-    COOL="${RESTART_COOLDOWN:-120}"; case "$COOL" in ""|*[!0-9]*) COOL=120;; esac
-    CDIR="bedrock-data/.restart-cooldowns"; mkdir -p "$CDIR"; cf="$CDIR/global"
+    REASON="{{REASON}}"
+    # rate-limit PER REQUESTER (default 10m): one restart per cooldown per person, so a single
+    # user can't spam bounces. Keyed by a filename-safe form of the requester id.
+    COOL="${RESTART_COOLDOWN:-600}"; case "$COOL" in ""|*[!0-9]*) COOL=600;; esac
+    key=$(printf '%s' "$WHO" | tr -c 'A-Za-z0-9_.-' '_'); [ -n "$key" ] || key=anon
+    CDIR="bedrock-data/.restart-cooldowns"; mkdir -p "$CDIR"; cf="$CDIR/$key"
     now=$(date +%s)
     if [ -f "$cf" ]; then
       last=$(cat "$cf" 2>/dev/null || echo 0); case "$last" in ""|*[!0-9]*) last=0;; esac
       rem=$((COOL - (now - last))); [ "$rem" -gt 0 ] && { echo "RATELIMIT $rem"; exit 0; }
     fi
     printf '%s\n' "$now" > "$cf"   # start the cooldown on ATTEMPT (even a failed one) to stop spam
+    # audit log: who initiated the restart, why, and when.
+    mkdir -p bedrock-data
+    printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$WHO" "$REASON" >> bedrock-data/restart.log
+    echo "→ restart requested by $WHO — reason: $REASON"
+    just _shutdown-countdown "restarting" || true   # 60s→10s in-game + Discord warning IF players online
     # in-place restart keeps the container's logs; `docker restart` SIGKILLs a wedged process
-    # after the stop-timeout, so this clears the hung-but-running crash autoheal also targets.
+    # after the stop-timeout, so this also clears a hung-but-running server.
     docker compose restart bedrock >/dev/null 2>&1 || { echo "ERR restart-failed"; exit 0; }
+    ./scripts/reconcile.sh >/dev/null 2>&1 || true   # backfill join/leave missed across the bounce
     echo "OK restarted"
 
 # internal: read an OFFLINE player's last-saved coords from the world DB, resolving the

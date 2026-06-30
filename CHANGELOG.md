@@ -16,6 +16,40 @@ _Nothing yet._
 
 ---
 
+## 2026.06.30.1
+
+The "`/restart` you can actually use" release. The manual restart command no longer
+refuses to run on a server that *looks* healthy — the exact case that bit us when a
+player could connect but never spawn (the box64 spawn path wedges while the game loop
+keeps answering `list`, so the old health gate said *"no restart needed"*). It's now
+unconditional but safe: it warns players, logs who & why, and rate-limits per person.
+
+### Changed
+
+- **`/restart` & `!restart` work any time — the "only if crashed/unreachable" gate is
+  gone.** Previously the command refused unless the server failed a live `list` probe
+  or was Docker-`unhealthy`, which meant a wedged-but-responsive server (players stuck
+  on the loading screen) couldn't be bounced from Discord. The health gate is removed.
+- **A reason is now required on Discord.** `/restart` takes a required `reason`
+  argument and `!restart <reason>` rejects an empty reason. Every attempt is appended
+  to `bedrock-data/restart.log` (`timestamp ⇥ who ⇥ reason`) — gitignored, so no
+  gamertags land in the repo.
+- **Online players get warned before the bounce.** When anyone's on, `/restart` now
+  runs the shared in-game 60s→10s countdown before restarting (it was previously only
+  reachable on an already-dead server, so it never warned).
+- **Rate limit is now per-requester (default 10m), was global (120s).** One person
+  can't bounce-loop the box; keyed off the requester id. Tune with `RESTART_COOLDOWN`.
+
+### Added
+
+- **Restart/shutdown countdowns now post to `#server-status`.** The shared
+  `_shutdown-countdown` (used by `just restart`, `just down`, `just recreate`, and the
+  new `/restart`) sends a single Discord notice — *"🔄 Server restarting in 60s — N
+  player(s) online"* — once at the start of the countdown, so Discord watchers hear
+  about a bounce, not just whoever's in-game.
+
+---
+
 ## 2026.06.30
 
 The "faster maps & friendlier ops" release: the world map renders far faster and

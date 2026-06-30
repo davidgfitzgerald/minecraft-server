@@ -11,7 +11,7 @@ operations layer:
 - 🗺️ **World map** — render the overworld to a hill-shaded PNG and post it to `#map`
 - 🗄️ **Backups** — consistent world snapshots, self-rotating, with one command
 - 🩺 **Health check** — `just doctor` (also `!doctor` / `/doctor`) for an at-a-glance status report
-- ♻️ **Self-healing** — a watchdog auto-restarts the server if it goes unhealthy; `!restart` / `/restart` forces it by hand (only when it's actually down)
+- ♻️ **Self-healing** — a watchdog auto-restarts the server if it goes unhealthy; `!restart` / `/restart <reason>` forces it by hand any time (warns online players first, logs who & why, rate-limited per person)
 - 🛡️ **Safety guards** — nothing restarts/stops the server while a player is online
 - 🧙 **`just setup`** — an interactive wizard that gets a fresh clone running
 
@@ -248,12 +248,14 @@ kicks in. Two layers cover this:
   `autoheal` `docker restart`s it. A generous `start_period` (180s) keeps a slow
   world-load in `starting`, not `unhealthy`, so a normal boot is never restarted, and
   `just down` removes the container so the watchdog never fights maintenance.
-- **Manual — `!restart` / `/restart` (Discord).** Forces a restart when the
-  `🔴 SERVER DOWN` alert lands. It only acts when the server is genuinely not serving
-  (fails a live `list` probe *or* is `unhealthy`) — a healthy server gets *"no restart
-  needed"* — so it can't bounce a server people are playing on, and a global cooldown
-  (`RESTART_COOLDOWN`, default 120s) prevents bounce-looping. Discord-only by design:
-  a crashed server has no in-game chat to type into.
+- **Manual — `!restart <reason>` / `/restart` (Discord).** Forces a restart **any
+  time** — including a server that looks healthy but is wedged (e.g. players show in
+  `/players` but can't get past the loading screen). It's safe by construction: when
+  players are online it runs the in-game 60s→10s countdown (and pings `#server-status`)
+  before bouncing, it logs **who** asked and **why** to `bedrock-data/restart.log`, and
+  a **per-requester** cooldown (`RESTART_COOLDOWN`, default 600s / 10m) stops one person
+  bounce-looping. A reason is **required** on Discord. Discord-only by design: a crashed
+  server has no in-game chat to type into.
 
 ### 🎮 Commands (in-game + Discord)
 
@@ -270,7 +272,7 @@ player-specific commands take the target as an argument in Discord.
 | `!backup` | trigger a world snapshot | rate-limited per requester (`BACKUP_COOLDOWN`) |
 | `!map` | render the overworld → `#map` | rate-limited per requester (`MAP_COOLDOWN`) |
 | `!doctor` | health report | replies with the `--brief` line |
-| `!restart` | restart a crashed/unreachable server | **Discord only** — only acts when the server isn't serving; rate-limited (`RESTART_COOLDOWN`) |
+| `!restart <reason>` | restart the server (any time) | **Discord only** — reason required; warns online players (60s countdown) + logs who/why; rate-limited per requester (`RESTART_COOLDOWN`, default 10m) |
 | `!mail <player> <msg>` | leave in-game mail | delivered on the recipient's next join |
 | `!shrug` | ¯\\\_(ツ)_/¯ | |
 
@@ -278,7 +280,9 @@ Slash equivalents: `/players` (alias `/online`), `/map`, `/backup`, `/doctor`, `
 
 > `!restart` / `/restart` is **Discord-only by design** — a crashed server has no
 > in-game chat to type into, so the recovery command lives where it's reachable when
-> the game is down. The autoheal watchdog handles the automatic case.
+> the game is down. A reason is required and logged. The autoheal watchdog handles the
+> automatic case; this is the manual override when the server is wedged but not yet
+> flagged `unhealthy`.
 
 > The in-game `!` commands live in the chat-bridge behavior pack and activate on
 > the next server reload; the Discord side is served by the `chatbot` agent.
