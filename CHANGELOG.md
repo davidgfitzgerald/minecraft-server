@@ -12,8 +12,28 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ## Unreleased
 
+_Nothing yet._
+
+---
+
+## 2026.06.30
+
+The "faster maps & friendlier ops" release: the world map renders far faster and
+now shows everyone (online and offline), routine ops got quieter and
+self-healing, and the command surface gained `/commands` plus an offline
+`/coords`.
+
 ### Added
 
+- **`/commands`, and a detailed `!commands`.** Discord gained a `/commands` slash
+  command, and both the Discord `!commands` reply and the in-game `!commands`
+  listing now spell out every command with a one-line description — driven from a
+  single source of truth (`COMMAND_CATALOG` / the in-game registry) so the `/` and
+  `!` surfaces stay in lockstep.
+- **Offline `/coords <player>` and `!coords`.** Look up a player's last-saved
+  position even while they're offline, via a gitignored gamertag→ServerId map that
+  fills in automatically as people join (the world DB stores no gamertags). Online
+  lookups stay live.
 - **Self-healing watchdog (`mc-autoheal`) — automatic recovery from the box64
   "hung but running" crash.** A new `willfarrell/autoheal` container `docker restart`s
   bedrock once its Docker HEALTH goes `unhealthy`. This closes a real gap: when the
@@ -42,6 +62,21 @@ number. The current version also lives in [`VERSION`](VERSION).
 
 ### Changed
 
+- **World map renders far faster.** The `mc-tools` image now runs on the host's
+  native architecture instead of emulated `linux/amd64`, and the heightmap decode
+  is parallelised across worker processes (capped and `nice`d so the live server
+  keeps CPU priority). The extract dropped from ~22s to ~8s with byte-identical
+  output; tune the worker count with `MAP_WORKERS`.
+- **The map shows everyone, coloured by real blocks.** Live renders overlay online
+  players (green — live position + gamertag) and offline players (red — last seen),
+  with non-overlapping halo labels, and terrain is coloured by its true surface
+  block (water, leaves, wool, …) using elevation only for hillshade — instead of a
+  flat elevation gradient.
+- **`just restart` can restart covertly.** It announces "server is back" to
+  `#server-status` only when players were actually online, or when you pass a
+  message (`just restart "we're back"`); a restart with nobody online stays silent.
+- **Quieter (re)start notifications.** Dropped the per-(re)start "server
+  (re)started" Discord/phone ping — it fired on every bounce and was pure noise.
 - **Memory-alert thresholds retuned to cut false alarms.** The high-memory alarm
   default rose from `2500` to `3500` MiB (`MONITOR_MEM_ALERT`) and the repeat-reminder
   cooldown from `600`s to `3600`s (`MONITOR_ALERT_COOLDOWN`). Steady-state with a
@@ -49,6 +84,14 @@ number. The current version also lives in [`VERSION`](VERSION).
   2.5 GiB early-warning was firing every 10 min on normal working set rather than a
   genuine runaway toward the box64 heap crash. 3.5 GiB still leaves headroom on the
   7.8 GiB host. Defaults updated in `docker-compose.yml`; override either in `.env`.
+
+### Fixed
+
+- **`/map` survives the live-DB copy race.** Copying the actively-written world
+  LevelDB could capture an inconsistent snapshot that LevelDB then refused to open,
+  surfacing as a transient `ERR render-failed`. The copy + extract now retries on a
+  fresh snapshot (bounded), so `!map` / `/map` self-heal instead of needing a manual
+  re-run.
 
 ---
 
