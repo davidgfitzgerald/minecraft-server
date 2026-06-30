@@ -618,11 +618,20 @@ map DB="":
     /bin/rm -rf bedrock-data/_live_db; cp -a "$SRC" bedrock-data/_live_db
     mkdir -p bedrock-data/_maptmp
     echo "→ extracting heightmap in mc-tools…"
+    # for LIVE renders, also extract every saved player position (offline overlay), naming
+    # them via the gitignored player-map. (Backup renders skip it — the map is live-only.)
+    MAPMOUNT=(); MCCMD='python /scripts/export_heightmap.py'
+    if [ -z "{{DB}}" ]; then
+      [ -f bedrock-data/player-map.json ] || echo '{}' > bedrock-data/player-map.json
+      MAPMOUNT=(-v "$PWD/bedrock-data/player-map.json":/player-map.json:ro)
+      MCCMD="$MCCMD && python /scripts/export_players.py /out/offline_players.json"
+    fi
     docker run --rm --platform linux/amd64 \
       -v "$PWD/bedrock-data/_live_db":/db \
       -v "$PWD/scripts":/scripts:ro \
       -v "$PWD/bedrock-data/_maptmp":/out \
-      mc-tools python /scripts/export_heightmap.py
+      "${MAPMOUNT[@]}" \
+      mc-tools sh -c "$MCCMD"
     echo "→ rendering on host…"
     # the render needs python3 + matplotlib/numpy. The first python3 on PATH (esp. under
     # the chat-bot launchd agent) may NOT have them, so pick the first interpreter that does
@@ -632,15 +641,18 @@ map DB="":
       "$p" -c 'import matplotlib, numpy' >/dev/null 2>&1 && { PYBIN="$p"; break; }
     done
     [ -n "$PYBIN" ] || { echo "no python3 with matplotlib+numpy found (pip install matplotlib numpy)"; exit 1; }
-    # overlay ONLINE players (real gamertag + live position from the running server) on LIVE
-    # renders only — a backup's historical terrain shouldn't get current player dots. Offline
-    # players are omitted (the world DB stores no gamertags). Best-effort: never fail the render.
+    # overlay players on LIVE renders only (a backup's historical terrain shouldn't get current
+    # dots). ONLINE players show a bright green dot (real gamertag + live position); OFFLINE
+    # players show a faint grey "last seen" dot (saved position, named via the player-map).
+    # Best-effort: never fail the render.
     PLAYERS=""
-    if [ -z "{{DB}}" ] && python3 scripts/online_players.py bedrock-data/_maptmp/players.json 2>/dev/null; then
+    if [ -z "{{DB}}" ]; then
+      python3 scripts/players_overlay.py --offline bedrock-data/_maptmp/offline_players.json \
+        --out bedrock-data/_maptmp/players.json 2>/dev/null || true
       [ -s bedrock-data/_maptmp/players.json ] && PLAYERS="bedrock-data/_maptmp/players.json"
     fi
     "$PYBIN" scripts/render_map.py bedrock-data/_maptmp/heightmap.bin world-map.png $PLAYERS
-    echo "✅ wrote world-map.png (rendered with $PYBIN${PLAYERS:+ · online players overlaid})"
+    echo "✅ wrote world-map.png (rendered with $PYBIN${PLAYERS:+ · players overlaid: green=online, red=offline})"
 
 # internal: render the overworld map AND post it to #map. Shared by in-game/Discord !map.
 # Lock-guarded (renders are heavy) + rate-limited per requester. Arg = requester id, e.g.
